@@ -30,9 +30,9 @@
 **Lavadora ESP32** es un controlador inteligente para lavadora implementado sobre un microcontrolador **ESP32**. Gestiona un ciclo completo de lavado mediante una máquina de estados no bloqueante que controla:
 
 - Válvulas de llenado (agua fría / caliente)
-- Motor de agitación (sentido horario y antihorario)
+- Motor de agitación con dos configuraciones eléctricas de dirección
 - Válvula de desagüe
-- Centrifugado (motor antihorario a máxima velocidad)
+- Centrifugado (misma configuración de dirección B usada por el firmware)
 - Sensor de nivel de agua
 
 El sistema puede operarse de **dos formas independientes o combinadas**:
@@ -53,8 +53,8 @@ Ambos métodos comparten el mismo estado interno: un cambio desde la web se refl
 | GPIO | Tipo | Nombre | Descripción |
 |---|---|---|---|
 | 32 | Salida relé | `RELAY_MOTOR_ON` | Alimentación general del motor |
-| 33 | Salida relé | `RELAY_HORARIO` | Sentido horario del motor |
-| 25 | Salida relé | `RELAY_ANTIHORARIO` | Sentido antihorario del motor |
+| 33 | Salida relé | `RELAY_DIR_A` | Relé auxiliar de inversión A |
+| 25 | Salida relé | `RELAY_DIR_B` | Relé auxiliar de inversión B |
 | 26 | Salida relé | `RELAY_VALVULA_FRIA` | Válvula de agua fría |
 | 27 | Salida relé | `RELAY_VALVULA_CALIENTE` | Válvula de agua caliente |
 | 14 | Salida relé | `RELAY_DRAIN` | Válvula de desagüe |
@@ -84,15 +84,22 @@ Ambos métodos comparten el mismo estado interno: un cambio desde la web se refl
 
 ### 2.3 Motor: conmutación segura
 
+Los relés de dirección se renombraron a `RELAY_DIR_A` y `RELAY_DIR_B` para evitar asumir un giro físico fijo desde el nombre. El sentido real depende del cableado del motor y de la etapa de potencia.
+
 Para evitar cortocircuito entre fases al invertir el motor, la secuencia es:
 
 ```
 1. Apagar RELAY_MOTOR_ON   (sin alimentación)
-2. Configurar RELAY_HORARIO y RELAY_ANTIHORARIO según sentido deseado
+2. Configurar RELAY_DIR_A y RELAY_DIR_B según la dirección deseada
 3. Encender RELAY_MOTOR_ON  (energizar con nueva dirección)
 ```
 
-Para **centrifugado**, el motor gira en sentido antihorario a plena velocidad (ambos relés de dirección ON).
+En el firmware actual la salida queda así:
+
+- Dirección A de agitación: `RELAY_MOTOR_ON` ON y `RELAY_DIR_A` / `RELAY_DIR_B` OFF
+- Dirección B de agitación: `RELAY_MOTOR_ON` ON y `RELAY_DIR_A` / `RELAY_DIR_B` ON
+- Motor detenido: `RELAY_MOTOR_ON`, `RELAY_DIR_A` y `RELAY_DIR_B` OFF
+- Centrifugado: usa la misma configuración eléctrica que la dirección B, junto con desagüe activo
 
 ---
 
@@ -193,9 +200,9 @@ flowchart TD
     D -- Sí --> ERR([ERROR: Fill Timeout])
     C -- Sí --> E[Cerrar válvulas\nIniciar agitación]
 
-    E --> F[Motor: Horario agitTime_ms]
+    E --> F[Motor: Direccion A agitTime_ms]
     F --> G[Pausa agitPause_ms]
-    G --> H[Motor: Antihorario agitTime_ms]
+    G --> H[Motor: Direccion B agitTime_ms]
     H --> I[Pausa agitPause_ms]
     I --> J{¿Cayó nivel\ndurante agitación?}
     J -- Sí --> K[Pausar motor\nRellenar]
@@ -216,7 +223,7 @@ flowchart TD
     R --> S[Abrir desagüe drainTime_ms]
     S --> T[Llenado Enjuague #2]
     T --> U[Agitar rinseTotal_ms / 2]
-    U --> V[Abrir desagüe\nMotor Antihorario\nCentrifugar spinTime_ms]
+    U --> V[Abrir desagüe\nMotor Direccion B\nCentrifugar spinTime_ms]
     V --> W([REPOSO])
 ```
 
@@ -240,7 +247,7 @@ El centrifugado siempre incluye una etapa inicial de **pre-desagüe** antes de a
 ```
 1. Abrir válvula de desagüe   (drainTime_ms)
 2. Cerrar desagüe             
-3. Arrancar motor antihorario + mantener desagüe abierto  (spinTime_ms)
+3. Arrancar motor en configuración de dirección B + mantener desagüe abierto  (spinTime_ms)
 4. Apagar motor y cerrar desagüe → IDLE
 ```
 
@@ -248,11 +255,13 @@ El centrifugado siempre incluye una etapa inicial de **pre-desagüe** antes de a
 
 Si el sensor de nivel deja de detectar agua **durante el lavado o enjuague**, el sistema:
 
-1. Para el motor inmediatamente.
+1. Verifica primero que la condición de nivel bajo se mantenga de forma continua por un pequeño intervalo de antirrebote.
 2. Congela el contador de tiempo de la fase.
 3. Abre las válvulas de llenado.
 4. Espera a que el nivel suba y se estabilice 5 s.
 5. Reanuda la agitación exactamente donde se quedó.
+
+En el firmware actual ese antirrebote de pérdida de nivel durante la agitación es de `250 ms`, para evitar falsos disparos provocados por vibración, ruido eléctrico o movimiento del agua.
 
 Si el relleno tarda más que `fillTimeout_ms` → error `FILL_TIMEOUT`.
 
@@ -476,17 +485,21 @@ Error cancelado (Timeout de llenado). Listo.
 
 | Parámetro | Valor |
 |---|---|
-| SSID | `Lavadora-ESP32` |
-| Contraseña | `esp32wifi` |
+| SSID | `Lavadora-ESP32` (valor inicial de fábrica) |
+| Contraseña | Abierta / vacía por defecto |
 | Dirección IP | `4.3.2.1` |
 | Máscara de subred | `255.255.255.0` |
 | Modo | AP (Access Point) — no necesita internet |
+
+El SSID y la clave ya no dependen solo de constantes de compilación. El firmware actual los puede guardar en NVS desde la propia web.
 
 ### 9.2 Portal cautivo
 
 El ESP32 corre un servidor DNS que responde **todas las consultas** con su propia IP (`4.3.2.1`). Cuando un dispositivo (teléfono, tablet, PC) se conecta a la red WiFi, el sistema operativo detecta automáticamente el portal y abre el navegador.
 
-El nombre de la red y la clave se pueden cambiar muy fácilmente editando los `#define` `WIFI_AP_SSID` y `WIFI_AP_PASSWORD` al inicio de [include/config.h](include/config.h). No hace falta modificar la lógica del programa: basta con cambiar esos textos por los que desees.
+De fábrica, la red puede arrancar abierta, sin clave. Después, desde la propia página web, el usuario puede cambiar el SSID y la contraseña y dejarlo guardado en memoria. Al guardar la configuración WiFi, el ESP32 reinicia automáticamente para levantar el nuevo AP.
+
+Los `#define` `WIFI_AP_SSID` y `WIFI_AP_PASSWORD` en [include/config.h](include/config.h) siguen existiendo como valores iniciales de fábrica, usados cuando no hay una configuración WiFi válida guardada en NVS.
 
 Rutas de detección de portal cautivo soportadas:
 - `/generate_204` (Android)
@@ -499,7 +512,7 @@ Rutas de detección de portal cautivo soportadas:
 ```
 1. Activar WiFi en el dispositivo
 2. Buscar la red "Lavadora-ESP32"
-3. Conectar con la contraseña: esp32wifi
+3. Si la red está abierta, conectarse directamente; si ya fue configurada, usar la clave actual
 4. El navegador se abrirá automáticamente (portal cautivo)
    — Si no: abrir http://4.3.2.1 manualmente
 ```
@@ -853,6 +866,60 @@ curl -X POST http://4.3.2.1/api/save \
 
 ---
 
+### 11.9 `POST /api/reset-params`
+
+Restaura los tiempos por defecto de fábrica para **todos los modos** y los guarda en NVS. Solo disponible en IDLE.
+
+Este endpoint está pensado para recuperar una configuración estable si el usuario modificó mal los tiempos desde la web.
+
+**Respuestas:**
+- `200 {"ok": true}` — restauración completada
+- `409 {"ok": false, "error": "locked_until_cancel"}` — lavadora en marcha
+
+**Ejemplo:**
+```bash
+curl -X POST http://4.3.2.1/api/reset-params
+```
+
+En la interfaz web este flujo está protegido con una confirmación previa antes de enviar la restauración.
+
+---
+
+### 11.10 `POST /api/wifi`
+
+Guarda la configuración del punto de acceso WiFi en NVS y programa un reinicio automático del ESP32 para aplicar los cambios. Solo disponible en IDLE.
+
+**Parámetros:**
+
+| Parámetro | Obligatorio | Tipo | Descripción |
+|---|---|---|---|
+| `ssid` | **Sí** | string | Nombre de la red WiFi (1–32 caracteres) |
+| `password` | No | string | Clave WiFi. Vacía = red abierta. Si se usa, debe tener 8–63 caracteres |
+
+**Respuestas:**
+- `200 {"ok": true, "restart": true}` — configuración guardada, reinicio pendiente
+- `400 {"ok": false, "error": "ssid_required"}` — falta el SSID
+- `400 {"ok": false, "error": "ssid_too_long"}` — SSID demasiado largo
+- `400 {"ok": false, "error": "ssid_invalid_chars"}` — SSID con caracteres inválidos
+- `400 {"ok": false, "error": "password_too_short"}` — clave demasiado corta
+- `400 {"ok": false, "error": "password_too_long"}` — clave demasiado larga
+- `400 {"ok": false, "error": "password_invalid_chars"}` — clave con caracteres inválidos
+- `409 {"ok": false, "error": "locked_until_cancel"}` — lavadora en marcha
+
+**Ejemplo — Dejar la red abierta con nuevo nombre:**
+```bash
+curl -X POST http://4.3.2.1/api/wifi \
+  -d "ssid=Lavadora-Patio&password="
+```
+
+**Ejemplo — Guardar nueva clave:**
+```bash
+curl -X POST http://4.3.2.1/api/wifi \
+  -d "ssid=Lavadora-Patio&password=clavewifi123"
+```
+
+---
+
 ## 12. Persistencia de configuración (NVS)
 
 El firmware usa la librería `Preferences` del ESP32 para guardar en flash **no volátil** (NVS — Non-Volatile Storage):
@@ -860,6 +927,8 @@ El firmware usa la librería `Preferences` del ESP32 para guardar en flash **no 
 - Modo seleccionado
 - Ciclo seleccionado
 - Temperatura de agua seleccionada
+- SSID del WiFi del equipo
+- Clave del WiFi del equipo
 - Todos los parámetros de los 4 modos
 
 ### 12.1 Estructura almacenada
@@ -867,10 +936,12 @@ El firmware usa la librería `Preferences` del ESP32 para guardar en flash **no 
 ```cpp
 struct PersistedConfig {
     uint32_t magic;    // 0x4C564A53 ("LVJS") — identifica datos válidos
-    uint16_t version;  // 2 — si cambia la estructura, invalida datos viejos
+  uint16_t version;  // 3 — si cambia la estructura, invalida datos viejos
     uint8_t  mode;
     uint8_t  cycle;
     uint8_t  water;
+  char     wifiSsid[33];
+  char     wifiPassword[64];
     WashParams params[4];  // parámetros de SOFT, NORMAL, STRONG, XSTRONG
 };
 ```
@@ -895,6 +966,8 @@ Si la estructura cambia en una futura versión del firmware (p.ej. se añade un 
 |---|---|
 | `POST /api/select` | Sí — ciclo, modo y agua |
 | `POST /api/save` | Sí — parámetros del modo indicado |
+| `POST /api/reset-params` | Sí — restaura parámetros estables de todos los modos |
+| Botón web `Restaurar tiempos de fabrica` | Sí — llama a `POST /api/reset-params` tras confirmar |
 | Botones físicos | **No** — los cambios de los botones son solo en RAM hasta que se use la web |
 | Inicio de ciclo (`/api/start`) | **No** — modificar la selección sí, pero no los parámetros |
 
@@ -974,7 +1047,7 @@ Si el OLED no está físicamente conectado, el firmware continúa funcionando no
 ### Caso 2 — Solo centrifugado desde la web
 
 ```
-1. Conectar al WiFi "Lavadora-ESP32" con contraseña "esp32wifi"
+1. Conectar al WiFi del equipo (abierto de fábrica o con la clave que se haya configurado)
 2. Abrir http://4.3.2.1
 3. En el selector Ciclo → elegir "Solo Centrifugado"
 4. Pulsar "Iniciar"
@@ -1041,6 +1114,6 @@ Solución:
 | `FILLING_RINSE` | Enjuague (Llenando) | Válvulas agua |
 | `RINSING` | Enjuagando | Motor (alternando) |
 | `DRAINING_RINSE` | Enjuague (Desaguando) | Desagüe |
-| `SPINNING` | Centrifugando | Motor antihorario + Desagüe |
+| `SPINNING` | Centrifugando | Motor en configuración de dirección B + Desagüe |
 | `PAUSED` | Pausado | Ninguno |
 | `ERROR` | ERROR | Ninguno |

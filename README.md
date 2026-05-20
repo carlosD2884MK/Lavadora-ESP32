@@ -165,12 +165,12 @@ La lavadora tambien crea su propia red WiFi para controlarla desde un telefono o
 
 ### Como entrar
 
-1. Conectate a la red WiFi llamada Lavadora-ESP32.
-2. Ingresa la clave esp32wifi.
+1. Conectate a la red WiFi que emite la lavadora. De fabrica se llama Lavadora-ESP32.
+2. Si el equipo esta recien configurado de fabrica, la red arranca abierta, sin clave.
 3. Abre el navegador.
 4. Si no abre automaticamente, entra a http://4.3.2.1.
 
-El nombre de la red WiFi y la clave pueden cambiarse facilmente al inicio del codigo editando los `#define` `WIFI_AP_SSID` y `WIFI_AP_PASSWORD` en [include/config.h](include/config.h).
+Desde la propia pagina web puedes cambiar el nombre de la red y la clave del WiFi del equipo. Al pulsar Guardar WiFi, la configuracion se guarda en memoria y el ESP32 se reinicia para iniciar con la nueva red.
 
 ### Que puedes hacer en la pagina
 
@@ -186,7 +186,40 @@ La pagina web muestra un panel de control sencillo donde puedes:
 - Pausar o reanudar
 - Cancelar
 - Guardar la seleccion
+- Cambiar el nombre de la red WiFi del equipo
+- Cambiar la clave WiFi del equipo
 - Ajustar tiempos de funcionamiento
+- Restaurar los tiempos de fabrica si alguien modifico mal los valores
+
+### Configuracion WiFi desde la web
+
+La pagina incluye una seccion llamada WiFi del equipo. Desde ahi puedes:
+
+- Cambiar el nombre de la red
+- Dejar la red abierta, sin clave
+- Colocar una clave nueva
+- Guardar la configuracion para que quede memorizada
+
+Reglas importantes:
+
+- El nombre de red no puede quedar vacio
+- La clave puede quedar vacia para una red abierta
+- Si usas clave, debe tener entre 8 y 63 caracteres
+- Al guardar, el ESP32 se reinicia automaticamente para levantar la nueva red
+
+### Restaurar tiempos de fabrica
+
+En la seccion de parametros hay un boton llamado Restaurar tiempos de fabrica.
+
+Ese boton sirve para volver a cargar los tiempos estables originales de todos los modos. Es util si alguien cambia los tiempos de lavado, enjuague, centrifugado o llenado y luego la maquina deja de trabajar como se esperaba.
+
+Para evitar errores, al pulsarlo la pagina pide confirmacion antes de aplicar el cambio.
+
+Al confirmar:
+
+- Se restauran los tiempos de todos los modos
+- Los valores se guardan en memoria
+- La pagina vuelve a mostrar los tiempos estables
 
 ### Seccion de estado
 
@@ -208,6 +241,15 @@ Esto permite saber rapidamente si la lavadora esta:
 - Centrifugando
 - Pausada
 - En error
+
+### Nota sobre el nivel de agua
+
+El sensor de nivel sigue interpretandose asi:
+
+- LOW = tina llena
+- HIGH = tina vacia
+
+Para evitar cortes falsos cuando el motor empieza a agitar o cuando el agua se mueve dentro de la tina, el firmware actual aplica un pequeño antirrebote al detectar nivel bajo durante lavado y enjuague. Solo si la lectura de nivel bajo se mantiene de forma continua por un corto intervalo, la lavadora entra otra vez en llenado.
 
 ### Seccion de control
 

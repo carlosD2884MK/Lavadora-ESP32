@@ -5,8 +5,8 @@ namespace Pinout {
 // ── Relés (módulo de 8 relés, activo en HIGH) ─────────────────────────────
 // Lavado con relés dedicados para motor, centrifugado, llenado y desagüe.
 constexpr int RELAY_MOTOR_ON         = 32;  // Encendido general de motor
-constexpr int RELAY_HORARIO          = 33;  // Sentido horario
-constexpr int RELAY_ANTIHORARIO      = 25;  // Sentido antihorario
+constexpr int RELAY_DIR_A            = 33;  // Relé auxiliar de inversión A
+constexpr int RELAY_DIR_B            = 25;  // Relé auxiliar de inversión B
 constexpr int RELAY_VALVULA_FRIA     = 26;  // Entrada agua fría
 constexpr int RELAY_VALVULA_CALIENTE = 27;  // Entrada agua caliente
 constexpr int RELAY_DRAIN            = 14;  // Valvula de desagüe

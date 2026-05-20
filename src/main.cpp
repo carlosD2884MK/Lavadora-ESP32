@@ -93,7 +93,9 @@ static Preferences prefs;
 static const char* PREF_NS = "lavadora";
 static const char* PREF_KEY = "cfg";
 static const uint32_t CONFIG_MAGIC = 0x4C564A53;  // LVJS
-static const uint16_t CONFIG_VERSION = 2;
+static const uint16_t CONFIG_VERSION = 3;
+static const size_t WIFI_SSID_MAX_LEN = 32;
+static const size_t WIFI_PASSWORD_MAX_LEN = 63;
 
 struct PersistedConfig {
     uint32_t magic;
@@ -101,15 +103,19 @@ struct PersistedConfig {
     uint8_t mode;
     uint8_t cycle;
     uint8_t water;
+    char wifiSsid[WIFI_SSID_MAX_LEN + 1];
+    char wifiPassword[WIFI_PASSWORD_MAX_LEN + 1];
     WashParams params[static_cast<uint8_t>(WashMode::MODE_COUNT)];
 };
 
 // -----------------------------------------------------------------------------
 // WiFi + portal cautivo + web (Fase 4)
-static const char* AP_SSID = WIFI_AP_SSID;
-static const char* AP_PASSWORD = WIFI_AP_PASSWORD;
+static char apSsid[WIFI_SSID_MAX_LEN + 1] = WIFI_AP_SSID;
+static char apPassword[WIFI_PASSWORD_MAX_LEN + 1] = WIFI_AP_PASSWORD;
 static const IPAddress AP_IP(4, 3, 2, 1);
 static const IPAddress AP_MASK(255, 255, 255, 0);
+static bool wifiRestartPending = false;
+static uint32_t wifiRestartAt = 0;
 
 static DNSServer dnsServer;
 static AsyncWebServer server(80);
@@ -152,12 +158,14 @@ void stopFinishAlert();
 void loadPersistentConfig();
 void savePersistentConfig();
 void applyDefaultConfig();
+void restoreDefaultModeParams();
 
 void setupNetworking();
 void setupWebServer();
 String htmlPage();
 String jsonStatus();
 String jsonConfig();
+String jsonEscape(const String& value);
 
 #ifdef USE_OLED
 void setupOled();
@@ -191,6 +199,54 @@ static bool parseWater(const String& value, WaterFillMode& out) {
     return true;
 }
 
+static void copyWifiValue(char* dest, size_t destSize, const String& value) {
+    value.substring(0, destSize - 1).toCharArray(dest, destSize);
+}
+
+static void copyWifiValue(char* dest, size_t destSize, const char* value) {
+    strncpy(dest, value ? value : "", destSize - 1);
+    dest[destSize - 1] = '\0';
+}
+
+static bool validateWifiSsid(const String& value, String& error) {
+    if (value.length() == 0) {
+        error = "ssid_required";
+        return false;
+    }
+    if (value.length() > WIFI_SSID_MAX_LEN) {
+        error = "ssid_too_long";
+        return false;
+    }
+    for (size_t i = 0; i < value.length(); i++) {
+        char c = value[i];
+        if (static_cast<unsigned char>(c) < 32 || c == 127) {
+            error = "ssid_invalid_chars";
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool validateWifiPassword(const String& value, String& error) {
+    if (value.length() == 0) return true;
+    if (value.length() < 8) {
+        error = "password_too_short";
+        return false;
+    }
+    if (value.length() > WIFI_PASSWORD_MAX_LEN) {
+        error = "password_too_long";
+        return false;
+    }
+    for (size_t i = 0; i < value.length(); i++) {
+        char c = value[i];
+        if (static_cast<unsigned char>(c) < 32 || c == 127) {
+            error = "password_invalid_chars";
+            return false;
+        }
+    }
+    return true;
+}
+
 // -----------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
@@ -212,7 +268,10 @@ void setup() {
     washer.setWaterMode(selectedWater);
     Serial.printf("Ciclo: %s | Modo: %s | Agua: %s\n",
                   cycleLabel(selectedCycle), modeLabel(selectedMode), waterFillLabel(selectedWater));
-    Serial.printf("AP: %s | PASS: %s | IP: %s\n", AP_SSID, AP_PASSWORD, WiFi.softAPIP().toString().c_str());
+    Serial.printf("AP: %s | PASS: %s | IP: %s\n",
+                  apSsid,
+                  apPassword[0] ? apPassword : "(abierta)",
+                  WiFi.softAPIP().toString().c_str());
     printMenu();
 }
 
@@ -251,14 +310,20 @@ void loop() {
         lastStatusPrint = millis();
     }
 
+    if (wifiRestartPending && millis() >= wifiRestartAt) {
+        Serial.println("Reiniciando ESP para aplicar la nueva red WiFi...");
+        delay(150);
+        ESP.restart();
+    }
+
     if (Serial.available()) handleSerial();
 }
 
 // -----------------------------------------------------------------------------
 void setupPins() {
     const int relays[] = {
-        Pinout::RELAY_MOTOR_ON, Pinout::RELAY_HORARIO,
-        Pinout::RELAY_ANTIHORARIO, Pinout::RELAY_VALVULA_FRIA,
+        Pinout::RELAY_MOTOR_ON, Pinout::RELAY_DIR_A,
+        Pinout::RELAY_DIR_B, Pinout::RELAY_VALVULA_FRIA,
         Pinout::RELAY_VALVULA_CALIENTE, Pinout::RELAY_DRAIN,
         Pinout::RELAY_7, Pinout::RELAY_8
     };
@@ -755,6 +820,13 @@ void handleSerial() {
 
 // -----------------------------------------------------------------------------
 void applyDefaultConfig() {
+    restoreDefaultModeParams();
+
+    copyWifiValue(apSsid, sizeof(apSsid), WIFI_AP_SSID);
+    copyWifiValue(apPassword, sizeof(apPassword), WIFI_AP_PASSWORD);
+}
+
+void restoreDefaultModeParams() {
     for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
         washer.params[i] = DEFAULT_PARAMS[i];
     }
@@ -789,6 +861,11 @@ void loadPersistentConfig() {
         washer.params[i] = cfg.params[i];
     }
 
+    if (cfg.wifiSsid[0] != '\0') {
+        copyWifiValue(apSsid, sizeof(apSsid), cfg.wifiSsid);
+    }
+    copyWifiValue(apPassword, sizeof(apPassword), cfg.wifiPassword);
+
     Serial.println("Config cargada desde NVS.");
 }
 
@@ -799,6 +876,8 @@ void savePersistentConfig() {
     cfg.mode = static_cast<uint8_t>(selectedMode);
     cfg.cycle = static_cast<uint8_t>(selectedCycle);
     cfg.water = static_cast<uint8_t>(selectedWater);
+    copyWifiValue(cfg.wifiSsid, sizeof(cfg.wifiSsid), apSsid);
+    copyWifiValue(cfg.wifiPassword, sizeof(cfg.wifiPassword), apPassword);
 
     for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
         cfg.params[i] = washer.params[i];
@@ -813,8 +892,11 @@ void savePersistentConfig() {
 void setupNetworking() {
     WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(AP_IP, AP_IP, AP_MASK);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
-    //WiFi.softAP(AP_SSID);
+    if (apPassword[0]) {
+        WiFi.softAP(apSsid, apPassword);
+    } else {
+        WiFi.softAP(apSsid);
+    }
     dnsServer.start(53, "*", AP_IP);
 }
 
@@ -927,6 +1009,48 @@ void setupWebServer() {
         request->send(200, "application/json", "{\"ok\":true}");
     });
 
+    server.on("/api/reset-params", HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (washer.phase() != CyclePhase::IDLE) {
+            request->send(409, "application/json", "{\"ok\":false,\"error\":\"locked_until_cancel\"}");
+            return;
+        }
+
+        restoreDefaultModeParams();
+        savePersistentConfig();
+        request->send(200, "application/json", "{\"ok\":true}");
+    });
+
+    server.on("/api/wifi", HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (washer.phase() != CyclePhase::IDLE) {
+            request->send(409, "application/json", "{\"ok\":false,\"error\":\"locked_until_cancel\"}");
+            return;
+        }
+
+        String newSsid = request->hasParam("ssid", true) ? request->getParam("ssid", true)->value() : "";
+        String newPassword = request->hasParam("password", true) ? request->getParam("password", true)->value() : "";
+        newSsid.trim();
+        newPassword.trim();
+
+        String error;
+        if (!validateWifiSsid(newSsid, error)) {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"" + error + "\"}");
+            return;
+        }
+        if (!validateWifiPassword(newPassword, error)) {
+            request->send(400, "application/json", "{\"ok\":false,\"error\":\"" + error + "\"}");
+            return;
+        }
+
+        copyWifiValue(apSsid, sizeof(apSsid), newSsid);
+        copyWifiValue(apPassword, sizeof(apPassword), newPassword);
+        savePersistentConfig();
+
+        wifiRestartPending = true;
+        wifiRestartAt = millis() + 1200;
+
+        request->send(200, "application/json", "{\"ok\":true,\"restart\":true}");
+    });
+
     // Endpoints tipicos de deteccion de portal cautivo
     server.on("/generate_204", HTTP_GET, [](AsyncWebServerRequest* request) {
         request->redirect("/");
@@ -976,6 +1100,12 @@ String jsonConfig() {
     s += "\"selectedMode\":" + String(static_cast<uint8_t>(selectedMode)) + ",";
     s += "\"selectedCycle\":" + String(static_cast<uint8_t>(selectedCycle)) + ",";
     s += "\"selectedWater\":" + String(static_cast<uint8_t>(selectedWater)) + ",";
+    s += "\"wifi\":{";
+    s += "\"ssid\":\"" + jsonEscape(apSsid) + "\",";
+    s += "\"open\":" + String(apPassword[0] ? "false" : "true") + ",";
+    s += "\"maxSsidLen\":" + String(WIFI_SSID_MAX_LEN) + ",";
+    s += "\"maxPasswordLen\":" + String(WIFI_PASSWORD_MAX_LEN);
+    s += "},";
     s += "\"modes\":[";
 
     for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
@@ -1017,6 +1147,23 @@ String jsonConfig() {
     s += "}";
 
     return s;
+}
+
+String jsonEscape(const String& value) {
+    String out;
+    out.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); i++) {
+        char c = value[i];
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
 }
 
 String htmlPage() {
@@ -1141,9 +1288,31 @@ String htmlPage() {
                 Si subes el tiempo total, la fase dura más.<br>
                 Si subes el timeout de llenado, tarda más en declarar error por falta de agua.
             </p>
-            <button id="saveParamsBtn" style="margin-top:10px;" onclick="saveParams()">Guardar parametros del modo</button>
+            <div class="row" style="margin-top:10px;">
+                <button id="saveParamsBtn" onclick="saveParams()">Guardar parametros del modo</button>
+                <button id="resetParamsBtn" class="warn" onclick="resetFactoryParams()">Restaurar tiempos de fabrica</button>
+            </div>
             <p id="lockLine" class="lockMsg"></p>
     </section>
+
+        <section class="card">
+            <h3>WiFi del equipo</h3>
+            <div class="row">
+                <div>
+                    <label for="wifiSsid">Nombre de red (SSID)</label>
+                    <input id="wifiSsid" type="text" maxlength="32" placeholder="Nombre de la red" />
+                </div>
+                <div>
+                    <label for="wifiPassword">Clave WiFi</label>
+                    <input id="wifiPassword" type="password" maxlength="63" placeholder="Vacia = red abierta" />
+                </div>
+            </div>
+            <p id="wifiState" class="muted" style="margin-top:10px; font-size:.9rem; line-height:1.35;"></p>
+            <p class="muted" style="margin-top:10px; font-size:.88rem; line-height:1.35;">
+                De fábrica la red puede quedar abierta, sin clave. Si escribes una clave, debe tener entre 8 y 63 caracteres. Al guardar, el ESP32 reinicia y arranca con la nueva red.
+            </p>
+            <button id="saveWifiBtn" style="margin-top:10px;" onclick="saveWifi()">Guardar WiFi</button>
+        </section>
   </div>
 </div>
 <div id="toast" class="toast"></div>
@@ -1236,7 +1405,9 @@ function updateEditLock() {
 
     const lockTargets = [
         'cycle','mode','water','saveSelBtn','saveParamsBtn',
-        'agit','pause','wtime','rtime','rtimeTotal','spin','drain','fill'
+        'resetParamsBtn',
+        'agit','pause','wtime','rtime','rtimeTotal','spin','drain','fill',
+        'wifiSsid','wifiPassword','saveWifiBtn'
     ];
 
     lockTargets.forEach(id => {
@@ -1255,6 +1426,12 @@ function mapApiError(err) {
     if (err.code === 'mode_required') return 'Debes indicar el modo.';
     if (err.code === 'mode_invalid') return 'El modo enviado no es valido.';
     if (err.code === 'running') return 'La lavadora esta corriendo.';
+    if (err.code === 'ssid_required') return 'Debes escribir un nombre de red.';
+    if (err.code === 'ssid_too_long') return 'El nombre de red no puede superar 32 caracteres.';
+    if (err.code === 'ssid_invalid_chars') return 'El nombre de red contiene caracteres no validos.';
+    if (err.code === 'password_too_short') return 'La clave debe tener al menos 8 caracteres o quedar vacia.';
+    if (err.code === 'password_too_long') return 'La clave no puede superar 63 caracteres.';
+    if (err.code === 'password_invalid_chars') return 'La clave contiene caracteres no validos.';
     return err.message || err.code;
 }
 
@@ -1332,6 +1509,9 @@ function loadSelectors() {
   const cycleSel = document.getElementById('cycle');
   const modeSel = document.getElementById('mode');
     const waterSel = document.getElementById('water');
+    const wifiSsid = document.getElementById('wifiSsid');
+    const wifiPassword = document.getElementById('wifiPassword');
+    const wifiState = document.getElementById('wifiState');
 
   cycleSel.innerHTML = '';
   configData.cycles.forEach(c => {
@@ -1361,6 +1541,16 @@ function loadSelectors() {
     });
     waterSel.value = configData.selectedWater;
 
+    if (configData.wifi) {
+        wifiSsid.value = configData.wifi.ssid || '';
+        wifiPassword.value = '';
+        wifiSsid.maxLength = configData.wifi.maxSsidLen || 32;
+        wifiPassword.maxLength = configData.wifi.maxPasswordLen || 63;
+        wifiState.textContent = configData.wifi.open
+            ? 'Estado actual: red abierta, sin clave.'
+            : 'Estado actual: red protegida con clave. Si dejas la clave vacia al guardar, la red quedara abierta.';
+    }
+
   fillModeParams();
     hasLocalChanges = false;
 }
@@ -1379,6 +1569,8 @@ function configChanged(prev, next) {
     if (prev.selectedMode !== next.selectedMode) return true;
     if (prev.selectedCycle !== next.selectedCycle) return true;
     if (prev.selectedWater !== next.selectedWater) return true;
+    if ((prev.wifi?.ssid || '') !== (next.wifi?.ssid || '')) return true;
+    if (!!prev.wifi?.open !== !!next.wifi?.open) return true;
     if (prev.modes.length !== next.modes.length) return true;
 
     for (let i = 0; i < prev.modes.length; i++) {
@@ -1416,6 +1608,21 @@ function applyConfigToUI(previousConfig, nextConfig) {
     }
     if (waterSel && String(waterSel.value) !== String(nextConfig.selectedWater)) {
         waterSel.value = String(nextConfig.selectedWater);
+    }
+
+    const wifiSsid = document.getElementById('wifiSsid');
+    const wifiPassword = document.getElementById('wifiPassword');
+    const wifiState = document.getElementById('wifiState');
+    if (wifiSsid && String(wifiSsid.value) !== String(nextConfig.wifi?.ssid || '')) {
+        wifiSsid.value = String(nextConfig.wifi?.ssid || '');
+    }
+    if (wifiPassword) {
+        wifiPassword.value = '';
+    }
+    if (wifiState) {
+        wifiState.textContent = nextConfig.wifi?.open
+            ? 'Estado actual: red abierta, sin clave.'
+            : 'Estado actual: red protegida con clave. Si dejas la clave vacia al guardar, la red quedara abierta.';
     }
 
     configData = nextConfig;
@@ -1549,6 +1756,55 @@ async function saveParams() {
     } catch (e) { alert('No se pudieron guardar parametros: ' + mapApiError(e)); }
 }
 
+async function resetFactoryParams() {
+    if (statusData && !statusData.canEdit) {
+        showToast('Primero cancela para editar', 'err');
+        return;
+    }
+
+    const confirmed = confirm('Esto restaurara los tiempos de fabrica de todos los modos de lavado y enjuague. Los cambios personalizados se perderan. ¿Deseas continuar?');
+    if (!confirmed) return;
+
+    try {
+        await apiPost('/api/reset-params');
+        hasLocalChanges = false;
+        await refreshConfig();
+        fillModeParams();
+        showToast('Tiempos de fabrica restaurados');
+    } catch (e) {
+        alert('No se pudieron restaurar los tiempos de fabrica: ' + mapApiError(e));
+    }
+}
+
+async function saveWifi() {
+    if (statusData && !statusData.canEdit) {
+        showToast('Primero cancela para editar', 'err');
+        return;
+    }
+
+    const ssid = document.getElementById('wifiSsid').value.trim();
+    const password = document.getElementById('wifiPassword').value.trim();
+
+    if (!ssid) {
+        alert('Debes escribir un nombre de red.');
+        return;
+    }
+    if (password.length !== 0 && password.length < 8) {
+        alert('La clave debe tener al menos 8 caracteres o quedar vacia.');
+        return;
+    }
+
+    try {
+        await apiPost('/api/wifi', { ssid, password });
+        showToast('WiFi guardado. Reiniciando...', 'ok');
+        setTimeout(() => {
+            alert(`WiFi guardado. El ESP32 se reiniciara y la nueva red sera: ${ssid}` + (password ? '. Conectate usando la nueva clave.' : '. La red quedara abierta, sin clave.'));
+        }, 150);
+    } catch (e) {
+        alert('No se pudo guardar la configuracion WiFi: ' + mapApiError(e));
+    }
+}
+
 function onSelectionChanged() {
     hasLocalChanges = true;
 }
@@ -1559,6 +1815,8 @@ document.getElementById('mode').addEventListener('change', () => {
 });
 document.getElementById('cycle').addEventListener('change', onSelectionChanged);
 document.getElementById('water').addEventListener('change', onSelectionChanged);
+document.getElementById('wifiSsid').addEventListener('input', onSelectionChanged);
+document.getElementById('wifiPassword').addEventListener('input', onSelectionChanged);
 paramFieldIds.forEach(id => {
     document.getElementById(id).addEventListener('input', onSelectionChanged);
 });

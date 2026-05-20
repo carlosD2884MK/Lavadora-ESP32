@@ -89,6 +89,7 @@ private:
     uint32_t _refillStart;  // inicio de rellenado entre agitaciones
     uint32_t _refillPauseStart; // inicio de congelamiento del tiempo por relleno
     uint32_t _levelReachedAt;   // inicio de nivel detectado como lleno para estabilizacion
+    uint32_t _levelLostAt;      // inicio de nivel bajo sostenido para antirrebote
     uint8_t  _rinseCount;       // tandas de enjuague completadas (0..2)
     bool     _spinningDrainStage; // true mientras centrifugado esta en pre-desagüe
     int      _agitCount;    // ciclos A/B completados en la fase de agitación

@@ -5,7 +5,7 @@
 // Cambia estos #define para personalizar el nombre del equipo y el WiFi AP.
 #define DEVICE_DISPLAY_NAME "Lavadora ESP32"
 #define WIFI_AP_SSID        "Lavadora-ESP32"
-#define WIFI_AP_PASSWORD    "esp32wifi"
+#define WIFI_AP_PASSWORD    ""
 
 // ── Modos de lavado (intensidad de agitación) ─────────────────────────────
 enum class WashMode : uint8_t {

@@ -1,6 +1,7 @@
 #include "machine.h"
 
 static const uint32_t LEVEL_STABLE_MS = 5000;
+static const uint32_t LEVEL_LOST_DEBOUNCE_MS = 250;
 
 // ─────────────────────────────────────────────────────────────────────────
 WashingMachine::WashingMachine()
@@ -18,6 +19,7 @@ WashingMachine::WashingMachine()
     , _refillStart(0)
     , _refillPauseStart(0)
     , _levelReachedAt(0)
+    , _levelLostAt(0)
     , _rinseCount(0)
     , _spinningDrainStage(false)
     , _agitCount(0)
@@ -83,6 +85,7 @@ void WashingMachine::pause() {
     _refillingLevel = false;
     _refillPauseStart = 0;
     _levelReachedAt = 0;
+    _levelLostAt = 0;
     setFill(false);
     setSpin(false);
     setDrain(false);
@@ -136,6 +139,7 @@ void WashingMachine::cancel() {
     _refillingLevel = false;
     _refillPauseStart = 0;
     _levelReachedAt = 0;
+    _levelLostAt = 0;
     setFill(false);
     setSpin(false);
     setDrain(false);
@@ -333,6 +337,7 @@ void WashingMachine::enterPhase(CyclePhase p) {
     _refillingLevel = false;
     _refillPauseStart = 0;
     _levelReachedAt = 0;
+    _levelLostAt = 0;
     _spinningDrainStage = false;
 
     switch (p) {
@@ -410,20 +415,21 @@ void WashingMachine::enterMotorPhase(MotorPhase mp) {
 
 void WashingMachine::applyMotorDirection(bool antiClockwise, bool enableMotor) {
     // Conmutación segura: primero sin alimentación, luego cambia sentido y por último energiza.
+    const bool dirRelaysOn = enableMotor && antiClockwise;
     digitalWrite(Pinout::RELAY_MOTOR_ON, RELAY_OFF);
 
     if (!enableMotor) {
-        digitalWrite(Pinout::RELAY_HORARIO, RELAY_OFF);
-        digitalWrite(Pinout::RELAY_ANTIHORARIO, RELAY_OFF);
+        digitalWrite(Pinout::RELAY_DIR_A, RELAY_OFF);
+        digitalWrite(Pinout::RELAY_DIR_B, RELAY_OFF);
         return;
     }
 
     if (antiClockwise) {
-        digitalWrite(Pinout::RELAY_HORARIO, RELAY_ON);
-        digitalWrite(Pinout::RELAY_ANTIHORARIO, RELAY_ON);
+        digitalWrite(Pinout::RELAY_DIR_A, RELAY_ON);
+        digitalWrite(Pinout::RELAY_DIR_B, RELAY_ON);
     } else {
-        digitalWrite(Pinout::RELAY_HORARIO, RELAY_OFF);
-        digitalWrite(Pinout::RELAY_ANTIHORARIO, RELAY_OFF);
+        digitalWrite(Pinout::RELAY_DIR_A, RELAY_OFF);
+        digitalWrite(Pinout::RELAY_DIR_B, RELAY_OFF);
     }
 
     digitalWrite(Pinout::RELAY_MOTOR_ON, RELAY_ON);
@@ -520,6 +526,13 @@ void WashingMachine::updateAgitating() {
         bool isFull = (digitalRead(Pinout::SENSOR_NIVEL) == LOW);
         if (!isFull) {
             _levelReachedAt = 0;
+            if (_levelLostAt == 0) {
+                _levelLostAt = now;
+                return;
+            }
+            if (now - _levelLostAt < LEVEL_LOST_DEBOUNCE_MS) {
+                return;
+            }
             if (!_refillingLevel) {
                 _refillingLevel = true;
                 _refillStart = now;
@@ -538,6 +551,8 @@ void WashingMachine::updateAgitating() {
             }
             return;
         }
+
+        _levelLostAt = 0;
 
         if (_refillingLevel) {
             if (_levelReachedAt == 0) {
