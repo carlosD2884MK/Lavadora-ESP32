@@ -30,9 +30,9 @@
 **Lavadora ESP32** es un controlador inteligente para lavadora implementado sobre un microcontrolador **ESP32**. Gestiona un ciclo completo de lavado mediante una máquina de estados no bloqueante que controla:
 
 - Válvulas de llenado (agua fría / caliente)
-- Motor de agitación con dos configuraciones eléctricas de dirección
+- Motor de agitación por pulsos de encendido y pausa
 - Válvula de desagüe
-- Centrifugado (misma configuración de dirección B usada por el firmware)
+- Centrifugado (motor ON + relés `RELAY_DIR_A` y `RELAY_DIR_B`)
 - Sensor de nivel de agua
 
 El sistema puede operarse de **dos formas independientes o combinadas**:
@@ -84,22 +84,30 @@ Ambos métodos comparten el mismo estado interno: un cambio desde la web se refl
 
 ### 2.3 Motor: conmutación segura
 
-Los relés de dirección se renombraron a `RELAY_DIR_A` y `RELAY_DIR_B` para evitar asumir un giro físico fijo desde el nombre. El sentido real depende del cableado del motor y de la etapa de potencia.
+Los relés de dirección se renombraron a `RELAY_DIR_A` y `RELAY_DIR_B` para evitar asumir un giro físico fijo desde el nombre. En el firmware actual esos relés se usan únicamente para centrifugado.
 
-Para evitar cortocircuito entre fases al invertir el motor, la secuencia es:
+Durante lavado y enjuague, la agitación usa solo `RELAY_MOTOR_ON` y trabaja por pulsos de encendido y pausa, sin activar `RELAY_DIR_A` ni `RELAY_DIR_B`.
+
+Para centrifugado, la secuencia segura es:
 
 ```
 1. Apagar RELAY_MOTOR_ON   (sin alimentación)
-2. Configurar RELAY_DIR_A y RELAY_DIR_B según la dirección deseada
+2. Activar RELAY_DIR_A y RELAY_DIR_B
 3. Encender RELAY_MOTOR_ON  (energizar con nueva dirección)
+```
+
+Y para salir de centrifugado la secuencia segura es:
+
+```
+1. Apagar RELAY_MOTOR_ON
+2. Desactivar RELAY_DIR_A y RELAY_DIR_B
 ```
 
 En el firmware actual la salida queda así:
 
-- Dirección A de agitación: `RELAY_MOTOR_ON` ON y `RELAY_DIR_A` / `RELAY_DIR_B` OFF
-- Dirección B de agitación: `RELAY_MOTOR_ON` ON y `RELAY_DIR_A` / `RELAY_DIR_B` ON
+- Agitación de lavado/enjuague: `RELAY_MOTOR_ON` ON y `RELAY_DIR_A` / `RELAY_DIR_B` OFF
 - Motor detenido: `RELAY_MOTOR_ON`, `RELAY_DIR_A` y `RELAY_DIR_B` OFF
-- Centrifugado: usa la misma configuración eléctrica que la dirección B, junto con desagüe activo
+- Centrifugado: `RELAY_MOTOR_ON`, `RELAY_DIR_A` y `RELAY_DIR_B` ON, junto con desagüe activo
 
 ---
 
@@ -117,9 +125,9 @@ En el firmware actual la salida queda así:
 
 ### 3.2 Modos de lavado (`WashMode`)
 
-El modo controla la **intensidad de agitación** (tiempo de giro, pausa y duración total):
+El modo controla la **intensidad de agitación** (tiempo de pulso, pausa y duración total):
 
-| ID | Nombre | Giro por sentido | Pausa entre sentidos | Duración total lavado | Duración total enjuague |
+| ID | Nombre | Pulso motor ON | Pausa entre pulsos | Duración total lavado | Duración total enjuague |
 |---|---|---|---|---|---|
 | 0 | **Suave** | 3 s | 600 ms | 12 min | ~5.8 min |
 | 1 | **Normal** | 5 s | 400 ms | 24 min | ~9.4 min |
@@ -200,11 +208,9 @@ flowchart TD
     D -- Sí --> ERR([ERROR: Fill Timeout])
     C -- Sí --> E[Cerrar válvulas\nIniciar agitación]
 
-    E --> F[Motor: Direccion A agitTime_ms]
-    F --> G[Pausa agitPause_ms]
-    G --> H[Motor: Direccion B agitTime_ms]
-    H --> I[Pausa agitPause_ms]
-    I --> J{¿Cayó nivel\ndurante agitación?}
+    E --> F[Motor ON solo con RELAY_MOTOR_ON agitTime_ms]
+    F --> G[Pausa motor OFF agitPause_ms]
+    G --> J{¿Cayó nivel\ndurante agitación?}
     J -- Sí --> K[Pausar motor\nRellenar]
     K --> J
     J -- No --> L{washTotal_ms\ncumplido?}
@@ -232,13 +238,16 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
     [*] --> GOING_A
-    GOING_A --> PAUSING_A : agitTime_ms cumplido
-    PAUSING_A --> GOING_B : agitPause_ms cumplido
-    GOING_B --> PAUSING_B : agitTime_ms cumplido
-    PAUSING_B --> GOING_A : agitPause_ms cumplido
+  GOING_A --> PAUSING_A : agitTime_ms cumplido
+  PAUSING_A --> GOING_A : agitPause_ms cumplido
     GOING_A --> STOPPED : fase completa / pausa / cancelar
-    GOING_B --> STOPPED : fase completa / pausa / cancelar
 ```
+
+Interpretación actual:
+
+- `GOING_A`: motor encendido solo con `RELAY_MOTOR_ON`
+- `PAUSING_A`: motor apagado
+- `GOING_B` y `PAUSING_B`: quedan reservados y no forman parte de la agitación normal actual
 
 ### 4.4 Centrifugado — pre-desagüe
 
@@ -454,7 +463,7 @@ Conectar un adaptador USB-TTL a TX (GPIO 1) y RX (GPIO 3).
 
 **Estado en marcha (`D`):**
 ```
-[Lavando] Normal | Lavado+Enjuague+Centrifugado | 1234 s restantes | agit transcurrido: 48200 ms
+[Lavando] Normal | Lavado+Enjuague+Centrifugado | fase restante: 1234 s | total restante: 1987 s | agit transcurrido: 48200 ms
 ```
 
 **Tiempos de modo (`T`):**
@@ -609,7 +618,7 @@ En la práctica, **Guardar selección** sirve para dejar preparado el arranque h
 │  │  [  86400  ] ms      │  │  [  5000  ] ms        ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  ┌──────────────────────┐  ┌───────────────────────┐│
-│  │ Enjuague: total      │  │ Enjuague: giro/sentido││
+│  │ Enjuague: total      │  │ Enjuague: pulso ON    ││
 │  │  [  34000  ] ms      │  │  [  3000  ] ms        ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  ┌──────────────────────┐  ┌───────────────────────┐│
@@ -617,7 +626,7 @@ En la práctica, **Guardar selección** sirve para dejar preparado el arranque h
 │  │  [ 360000  ] ms      │  │  [ 180000 ] ms        ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  ┌──────────────────────┐  ┌───────────────────────┐│
-│  │ Pausa entre sentidos │  │ Timeout llenado       ││
+│  │ Pausa entre pulsos   │  │ Timeout llenado       ││
 │  │  [   400   ] ms      │  │  [ 180000 ] ms        ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  Guía rápida: 1000 ms = 1 s. …                      │
@@ -639,12 +648,12 @@ Por ejemplo, puedes dejar tiempos cortos para **Suave**, tiempos intermedios par
 | Campo | Parámetro interno | Descripción |
 |---|---|---|
 | Lavado: tiempo total | `washTotal_ms` | Duración total de la fase de lavado |
-| Lavado: giro por sentido | `agitTime_ms` | Tiempo que gira en cada dirección |
+| Lavado: giro por pulso | `agitTime_ms` | Tiempo que el motor permanece encendido en cada pulso de agitación |
 | Enjuague: tiempo total | `rinseTotal_ms` | Duración total de los dos enjuagues combinados |
-| Enjuague: giro por sentido | `rinseAgitTime_ms` | Tiempo de giro en cada dirección durante enjuague |
+| Enjuague: giro por pulso | `rinseAgitTime_ms` | Tiempo que el motor permanece encendido en cada pulso durante enjuague |
 | Centrifugado total | `spinTime_ms` | Duración del centrifugado |
 | Desagüe | `drainTime_ms` | Tiempo abierto cada válvula de desagüe |
-| Pausa entre sentidos | `agitPause_ms` | Tiempo de reposo del motor al cambiar de dirección |
+| Pausa entre pulsos | `agitPause_ms` | Tiempo de reposo del motor entre pulsos de agitación |
 | Timeout llenado | `fillTimeout_ms` | Tiempo máximo para alcanzar el nivel antes de error |
 
 > **Los parámetros son por modo, no por ciclo.** Modificar "Medio / Normal" afecta a cualquier ciclo que se ejecute en ese modo, pero no cambia Suave, Fuerte ni Muy Fuerte.
@@ -843,10 +852,10 @@ Solo disponible en IDLE. El parámetro `mode` es obligatorio.
 | Parámetro | Obligatorio | Tipo | Descripción |
 |---|---|---|---|
 | `mode` | **Sí** | int (0–3) | Modo a modificar |
-| `agit` | No | int (ms) | Tiempo de giro por sentido en lavado |
-| `pause` | No | int (ms) | Pausa entre cambios de sentido |
+| `agit` | No | int (ms) | Tiempo de motor encendido por pulso en lavado |
+| `pause` | No | int (ms) | Pausa entre pulsos de agitación |
 | `wtime` | No | int (ms) | Tiempo total de lavado |
-| `rtime` | No | int (ms) | Tiempo de giro por sentido en enjuague |
+| `rtime` | No | int (ms) | Tiempo de motor encendido por pulso en enjuague |
 | `rtimeTotal` | No | int (ms) | Tiempo total de enjuague (2 ciclos combinados) |
 | `spin` | No | int (ms) | Tiempo total de centrifugado |
 | `drain` | No | int (ms) | Tiempo de desagüe |
@@ -1109,10 +1118,10 @@ Solución:
 |---|---|---|
 | `IDLE` | Reposo | Ninguno |
 | `FILLING_WASH` | Lavado (Llenando) | Válvulas agua |
-| `WASHING` | Lavando | Motor (alternando) |
+| `WASHING` | Lavando | Pulsos de `RELAY_MOTOR_ON` |
 | `DRAINING_WASH` | — (no usado en flujo actual) | Desagüe |
 | `FILLING_RINSE` | Enjuague (Llenando) | Válvulas agua |
-| `RINSING` | Enjuagando | Motor (alternando) |
+| `RINSING` | Enjuagando | Pulsos de `RELAY_MOTOR_ON` |
 | `DRAINING_RINSE` | Enjuague (Desaguando) | Desagüe |
 | `SPINNING` | Centrifugando | Motor en configuración de dirección B + Desagüe |
 | `PAUSED` | Pausado | Ninguno |

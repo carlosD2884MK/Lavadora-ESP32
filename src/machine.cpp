@@ -115,7 +115,7 @@ void WashingMachine::resume() {
             if (_motorPhase == MotorPhase::GOING_A) {
                 applyMotorDirection(false, true);
             } else if (_motorPhase == MotorPhase::GOING_B) {
-                applyMotorDirection(true, true);
+                applyMotorDirection(false, true);
             }
             setDrain(false);
             // Si estaba en pausa interna del motor, los relés quedan apagados
@@ -403,7 +403,7 @@ void WashingMachine::enterMotorPhase(MotorPhase mp) {
             applyMotorDirection(false, true);
             break;
         case MotorPhase::GOING_B:
-            applyMotorDirection(true, true);
+            applyMotorDirection(false, true);
             break;
         case MotorPhase::PAUSING_A:
         case MotorPhase::PAUSING_B:
@@ -595,20 +595,12 @@ void WashingMachine::updateAgitating() {
 
     switch (_motorPhase) {
         case MotorPhase::GOING_A:
+        case MotorPhase::GOING_B:
             if (now - _motorStart >= agitTime)
                 enterMotorPhase(MotorPhase::PAUSING_A);
             break;
 
         case MotorPhase::PAUSING_A:
-            if (now - _motorStart >= p.agitPause_ms)
-                enterMotorPhase(MotorPhase::GOING_B);
-            break;
-
-        case MotorPhase::GOING_B:
-            if (now - _motorStart >= agitTime)
-                enterMotorPhase(MotorPhase::PAUSING_B);
-            break;
-
         case MotorPhase::PAUSING_B:
             if (now - _motorStart >= p.agitPause_ms)
                 enterMotorPhase(MotorPhase::GOING_A);

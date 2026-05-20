@@ -12,6 +12,7 @@
 #include <Preferences.h>
 #include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
+#include <esp_system.h>
 
 #include "pinout.h"
 #include "config.h"
@@ -114,8 +115,12 @@ static char apSsid[WIFI_SSID_MAX_LEN + 1] = WIFI_AP_SSID;
 static char apPassword[WIFI_PASSWORD_MAX_LEN + 1] = WIFI_AP_PASSWORD;
 static const IPAddress AP_IP(4, 3, 2, 1);
 static const IPAddress AP_MASK(255, 255, 255, 0);
+static const uint32_t AP_HEALTHCHECK_MS = 5000;
+static const uint32_t AP_RECOVERY_COOLDOWN_MS = 15000;
 static bool wifiRestartPending = false;
 static uint32_t wifiRestartAt = 0;
+static uint32_t lastApHealthCheck = 0;
+static uint32_t lastApRecoveryAt = 0;
 
 static DNSServer dnsServer;
 static AsyncWebServer server(80);
@@ -161,6 +166,8 @@ void applyDefaultConfig();
 void restoreDefaultModeParams();
 
 void setupNetworking();
+void ensureAccessPointRunning();
+void restartAccessPoint();
 void setupWebServer();
 String htmlPage();
 String jsonStatus();
@@ -247,6 +254,12 @@ static bool validateWifiPassword(const String& value, String& error) {
     return true;
 }
 
+static bool isAccessPointHealthy() {
+    return WiFi.getMode() == WIFI_AP &&
+           WiFi.softAPIP() == AP_IP &&
+           WiFi.softAPSSID() == String(apSsid);
+}
+
 // -----------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
@@ -259,6 +272,10 @@ void setup() {
 
     setupNetworking();
     setupWebServer();
+
+    if (esp_reset_reason() == ESP_RST_BROWNOUT) {
+        Serial.println("Arranque tras brownout detectado: revisar fuente de alimentacion del ESP32.");
+    }
 
 #ifdef USE_OLED
     setupOled();
@@ -299,6 +316,7 @@ void loop() {
     checkButton(btnInicio, onInicioPress, onInicioLong);
 
     updateLeds();
+    ensureAccessPointRunning();
     dnsServer.processNextRequest();
 
 #ifdef USE_OLED
@@ -755,9 +773,15 @@ void printModeTimes() {
 }
 
 void printStatus() {
-    uint32_t remS = washer.remaining() / 1000;
-    Serial.printf("[%s] %s | %s | %lu s restantes | agit transcurrido: %lu ms\n", washer.phaseLabel(), modeLabel(washer.mode()),
-                  cycleLabel(washer.cycle()), remS, (unsigned long)washer.agitElapsedMs());
+    uint32_t phaseRemS = washer.remainingCurrentPhaseMs() / 1000;
+    uint32_t totalRemS = washer.remainingTotalMs() / 1000;
+    Serial.printf("[%s] %s | %s | fase restante: %lu s | total restante: %lu s | agit transcurrido: %lu ms\n",
+                  washer.phaseLabel(),
+                  modeLabel(washer.mode()),
+                  cycleLabel(washer.cycle()),
+                  phaseRemS,
+                  totalRemS,
+                  (unsigned long)washer.agitElapsedMs());
 }
 
 void handleSerial() {
@@ -891,13 +915,39 @@ void savePersistentConfig() {
 // -----------------------------------------------------------------------------
 void setupNetworking() {
     WiFi.mode(WIFI_AP);
-    WiFi.softAPConfig(AP_IP, AP_IP, AP_MASK);
-    if (apPassword[0]) {
-        WiFi.softAP(apSsid, apPassword);
-    } else {
-        WiFi.softAP(apSsid);
-    }
+    bool configOk = WiFi.softAPConfig(AP_IP, AP_IP, AP_MASK);
+    bool apOk = apPassword[0] ? WiFi.softAP(apSsid, apPassword)
+                              : WiFi.softAP(apSsid);
     dnsServer.start(53, "*", AP_IP);
+
+    if (!configOk || !apOk) {
+        Serial.printf("ADVERTENCIA: no se pudo levantar el AP correctamente (cfg=%u ap=%u).\n",
+                      configOk ? 1U : 0U,
+                      apOk ? 1U : 0U);
+    }
+}
+
+void restartAccessPoint() {
+    Serial.println("AP inactivo: reiniciando solo la interfaz WiFi...");
+    WiFi.softAPdisconnect(true);
+    delay(100);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    setupNetworking();
+}
+
+void ensureAccessPointRunning() {
+    if (wifiRestartPending) return;
+
+    uint32_t now = millis();
+    if (now - lastApHealthCheck < AP_HEALTHCHECK_MS) return;
+    lastApHealthCheck = now;
+
+    if (isAccessPointHealthy()) return;
+    if (now - lastApRecoveryAt < AP_RECOVERY_COOLDOWN_MS) return;
+
+    lastApRecoveryAt = now;
+    restartAccessPoint();
 }
 
 void setupWebServer() {
@@ -1344,12 +1394,23 @@ function estimateSelectedTotalMs() {
     const p = configData.modes.find(x => x.id === modeId);
     if (!p) return 0;
 
+    const rinseHalf = Math.max(0, Math.floor((Number(p.rtimeTotal) || 0) / 2));
+
     switch (cycleId) {
-        case 0: return p.fill + p.wtime + p.drain + p.fill + p.rtimeTotal + p.drain + p.spin;
-        case 1: return p.fill + p.rtimeTotal + p.drain + p.spin;
+        case 0:
+            return p.fill + p.wtime +
+                   p.drain + p.fill + rinseHalf +
+                   p.drain + p.fill + rinseHalf +
+                   p.drain + p.spin;
+        case 1:
+            return p.drain + p.fill + rinseHalf +
+                   p.drain + p.fill + rinseHalf +
+                   p.drain + p.spin;
         case 2: return p.fill + p.wtime + p.drain;
-        case 3: return p.fill + p.rtimeTotal + p.drain;
-        case 4: return p.spin;
+        case 3:
+            return p.drain + p.fill + rinseHalf +
+                   p.drain + p.fill + rinseHalf;
+        case 4: return p.drain + p.spin;
         default: return 0;
     }
 }

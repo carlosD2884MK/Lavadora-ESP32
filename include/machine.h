@@ -20,10 +20,10 @@ enum class CyclePhase : uint8_t {
 // ── Sub-estados del motor durante agitación ───────────────────────────────
 enum class MotorPhase : uint8_t {
     STOPPED  = 0,
-    GOING_A,    // girando sentido horario
-    PAUSING_A,  // pausa tras A, antes de B
-    GOING_B,    // girando sentido antihorario
-    PAUSING_B   // pausa tras B, antes del siguiente A
+    GOING_A,    // agitación: motor ON solo con RELAY_MOTOR_ON
+    PAUSING_A,  // agitación: motor OFF entre pulsos
+    GOING_B,    // reservado para configuración B (centrifugado)
+    PAUSING_B   // reservado
 };
 
 // ── Códigos de error ──────────────────────────────────────────────────────

@@ -20,6 +20,16 @@ La lavadora permite:
 - Elegir agua fria, caliente o ambas
 - Pausar, reanudar o cancelar un proceso
 
+## Como mueve el motor
+
+El comportamiento actual del motor es este:
+
+- En lavado y enjuague, la lavadora agita usando unicamente `RELAY_MOTOR_ON`
+- En esas fases el motor no invierte direccion: trabaja por pulsos de encendido y pausa
+- En centrifugado, la lavadora usa `RELAY_MOTOR_ON`, `RELAY_DIR_A` y `RELAY_DIR_B`
+- Para centrifugar se aplica una conmutacion segura: primero se apaga `RELAY_MOTOR_ON`, luego se activan `RELAY_DIR_A` y `RELAY_DIR_B`, y por ultimo se vuelve a energizar el motor
+- Para salir del centrifugado o quitar la configuracion de direccion, primero se apaga `RELAY_MOTOR_ON` y despues se desactivan `RELAY_DIR_A` y `RELAY_DIR_B`
+
 ## Uso desde el panel local
 
 En el panel frontal se observan tres botones principales:
