@@ -1,0 +1,55 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "pio-upload-esp32dev",
+			"type": "shell",
+			"command": "C:\\Users\\carlo\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run",
+				"--environment",
+				"esp32dev",
+				"--target",
+				"upload"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "pio-upload-monitor-esp32dev",
+			"type": "shell",
+			"command": "C:\\Users\\carlo\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run",
+				"--environment",
+				"esp32dev",
+				"--target",
+				"upload",
+				"--target",
+				"monitor"
+			],
+			"isBackground": true
+		},
+		{
+			"label": "pio-build-esp32dev",
+			"type": "shell",
+			"command": "C:\\Users\\carlo\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run",
+				"--environment",
+				"esp32dev"
+			],
+			"isBackground": false
+		},
+		{
+			"label": "pio-build-esp32dev",
+			"type": "shell",
+			"command": "C:\\Users\\carlo\\.platformio\\penv\\Scripts\\platformio.exe",
+			"args": [
+				"run",
+				"--environment",
+				"esp32dev"
+			],
+			"isBackground": false
+		}
+	]
+}
