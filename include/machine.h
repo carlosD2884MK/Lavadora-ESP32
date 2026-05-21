@@ -5,14 +5,17 @@
 
 // ── Fases principales del ciclo ───────────────────────────────────────────
 enum class CyclePhase : uint8_t {
-    IDLE          = 0,
-    FILLING_WASH,    // llenando para lavado
-    WASHING,         // agitando (lavado)
-    DRAINING_WASH,   // desaguando tras lavado
-    FILLING_RINSE,   // llenando para enjuague
-    RINSING,         // agitando (enjuague)
-    DRAINING_RINSE,  // desaguando tras enjuague
-    SPINNING,        // centrifugando
+    IDLE = 0,
+    FILLING_WASH,
+    WASHING,
+    DRAINING_WASH,
+    FILLING_RINSE_1,
+    RINSING_1,
+    DRAINING_RINSE_1,
+    FILLING_RINSE_2,
+    RINSING_2,
+    DRAINING_RINSE_2,
+    SPINNING,
     PAUSED,
     ERROR
 };

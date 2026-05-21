@@ -127,12 +127,18 @@ En el firmware actual la salida queda así:
 
 El modo controla la **intensidad de agitación** (tiempo de pulso, pausa y duración total):
 
-| ID | Nombre | Pulso motor ON | Pausa entre pulsos | Duración total lavado | Duración total enjuague |
-|---|---|---|---|---|---|
-| 0 | **Suave** | 3 s | 600 ms | 12 min | ~5.8 min |
-| 1 | **Normal** | 5 s | 400 ms | 24 min | ~9.4 min |
-| 2 | **Fuerte** | 8 s | 300 ms | ~46 min | ~14.3 min |
-| 3 | **Muy Fuerte** | 12 s | 300 ms | ~82 min | ~23.6 min |
+| ID | Nombre | Pulso motor ON lavado | Pausa entre pulsos | Duración total lavado | Pulso motor ON enjuague | Duración total enjuague |
+|---|---|---|---|---|---|---|
+| 0 | **Suave** | 4 s | 1 s | 12 min | 3 s | 6 min |
+| 1 | **Normal** | 5 s | 1 s | 18 min | 4 s | 8 min |
+| 2 | **Fuerte** | 7 s | 1 s | 24 min | 5 s | 10 min |
+| 3 | **Muy Fuerte** | 10 s | 1 s | 30 min | 6 s | 12 min |
+
+Para todos los modos, el firmware actual usa además:
+
+- **Desagüe:** 2 min
+- **Centrifugado:** 4 / 6 / 8 / 10 min según el modo
+- **Timeout de llenado:** 10 min como límite de seguridad
 
 > Los tiempos exactos se pueden modificar desde la página web y se persisten en flash (NVS). Ver [Sección 13](#13-parámetros-por-defecto) para la tabla completa de defaults.
 
@@ -469,8 +475,8 @@ Conectar un adaptador USB-TTL a TX (GPIO 1) y RX (GPIO 3).
 **Tiempos de modo (`T`):**
 ```
 --- TIEMPOS POR MODO ---
-Suave   | total 43 s, Lavado: giro 3000 ms, pausa 600 ms,  | Enjuague: total 20 s, giro 2000 ms | Spin: 300 s | Drenaje: 180 s | Llenado TO: 180 s
-Normal  | total 86 s, Lavado: giro 5000 ms, pausa 400 ms,  | Enjuague: total 34 s, giro 3000 ms | Spin: 360 s | Drenaje: 180 s | Llenado TO: 180 s
+Suave   | total 720 s, Lavado: giro 4000 ms, pausa 1000 ms,  | Enjuague: total 360 s, giro 3000 ms | Spin: 240 s | Drenaje: 120 s | Llenado TO: 600 s
+Normal  | total 1080 s, Lavado: giro 5000 ms, pausa 1000 ms, | Enjuague: total 480 s, giro 4000 ms | Spin: 360 s | Drenaje: 120 s | Llenado TO: 600 s
 ...
 ```
 
@@ -614,27 +620,29 @@ En la práctica, **Guardar selección** sirve para dejar preparado el arranque h
 ┌─────────────────────────────────────────────────────┐
 │  Parámetros por modo                                 │
 │  ┌──────────────────────┐  ┌───────────────────────┐│
-│  │ Lavado: tiempo total │  │ Lavado: giro/sentido  ││
-│  │  [  86400  ] ms      │  │  [  5000  ] ms        ││
+│  │ Lavado: tiempo total │  │ Lavado: pulso motor   ││
+│  │   [  1:26  ]         │  │   [  0:05  ]          ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  ┌──────────────────────┐  ┌───────────────────────┐│
 │  │ Enjuague: total      │  │ Enjuague: pulso ON    ││
-│  │  [  34000  ] ms      │  │  [  3000  ] ms        ││
+│  │   [  2:00  ]         │  │   [  0:05  ]          ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  ┌──────────────────────┐  ┌───────────────────────┐│
 │  │ Centrifugado total   │  │ Desagüe               ││
-│  │  [ 360000  ] ms      │  │  [ 180000 ] ms        ││
+│  │   [  6:00  ]         │  │   [  3:00  ]          ││
 │  └──────────────────────┘  └───────────────────────┘│
 │  ┌──────────────────────┐  ┌───────────────────────┐│
 │  │ Pausa entre pulsos   │  │ Timeout llenado       ││
-│  │  [   400   ] ms      │  │  [ 180000 ] ms        ││
+│  │   [  0:01  ]         │  │   [  3:00  ]          ││
 │  └──────────────────────┘  └───────────────────────┘│
-│  Guía rápida: 1000 ms = 1 s. …                      │
+│  Formato: min:seg. Ejemplo 1:30 = 1 min 30 s.      │
 │           [Guardar parámetros del modo]              │
 └─────────────────────────────────────────────────────┘
 ```
 
 Los parámetros mostrados corresponden al **modo actualmente seleccionado** en el selector. Al cambiar el selector de modo, los campos se actualizan automáticamente.
+
+En la interfaz web esos tiempos se editan en formato **min:seg** para facilitar la carga manual. El firmware sigue trabajando internamente en milisegundos, pero la propia página hace la conversión antes de enviar el guardado.
 
 Esto significa que los tiempos se configuran **por separado para cada modo de lavado**:
 
@@ -657,6 +665,8 @@ Por ejemplo, puedes dejar tiempos cortos para **Suave**, tiempos intermedios par
 | Timeout llenado | `fillTimeout_ms` | Tiempo máximo para alcanzar el nivel antes de error |
 
 > **Los parámetros son por modo, no por ciclo.** Modificar "Medio / Normal" afecta a cualquier ciclo que se ejecute en ese modo, pero no cambia Suave, Fuerte ni Muy Fuerte.
+
+> **Formato de captura en la web:** puedes escribir `0:05`, `1:30`, `6:00`, etc. Si escribes solo segundos, la página también los interpreta, pero el formato recomendado para el usuario es siempre `min:seg`.
 
 ### 10.4 Comportamiento de los selectores (sincronización)
 
@@ -847,6 +857,8 @@ Solo disponible en IDLE.
 Modifica los **parámetros temporales de un modo específico** y los guarda en NVS.  
 Solo disponible en IDLE. El parámetro `mode` es obligatorio.
 
+La página web no le pide al usuario escribir milisegundos directamente: muestra los tiempos como `min:seg` y los convierte a ms antes de llamar este endpoint.
+
 **Parámetros:**
 
 | Parámetro | Obligatorio | Tipo | Descripción |
@@ -990,27 +1002,29 @@ Tabla completa de `DEFAULT_PARAMS`:
 
 | Parámetro | Suave | Normal | Fuerte | Muy Fuerte |
 |---|---|---|---|---|
-| `agitTime_ms` | 3 000 ms (3 s) | 5 000 ms (5 s) | 8 000 ms (8 s) | 12 000 ms (12 s) |
-| `agitPause_ms` | 600 ms | 400 ms | 300 ms | 300 ms |
-| `washTotal_ms` | 43 200 ms (12 min) | 86 400 ms (24 min) | 166 000 ms (~46 min) | 295 200 ms (~82 min) |
-| `rinseAgitTime_ms` | 2 000 ms (2 s) | 3 000 ms (3 s) | 4 000 ms (4 s) | 5 000 ms (5 s) |
-| `rinseTotal_ms` | 20 800 ms (~5.8 min) | 34 000 ms (~9.4 min) | 51 600 ms (~14.3 min) | 84 800 ms (~23.6 min) |
-| `spinTime_ms` | 300 000 ms (5 min) | 360 000 ms (6 min) | 420 000 ms (7 min) | 480 000 ms (8 min) |
-| `drainTime_ms` | 180 000 ms (3 min) | 180 000 ms (3 min) | 180 000 ms (3 min) | 180 000 ms (3 min) |
-| `fillTimeout_ms` | 180 000 ms (3 min) | 180 000 ms (3 min) | 180 000 ms (3 min) | 180 000 ms (3 min) |
+| `agitTime_ms` | 4 000 ms (4 s) | 5 000 ms (5 s) | 7 000 ms (7 s) | 10 000 ms (10 s) |
+| `agitPause_ms` | 1 000 ms (1 s) | 1 000 ms (1 s) | 1 000 ms (1 s) | 1 000 ms (1 s) |
+| `washTotal_ms` | 720 000 ms (12 min) | 1 080 000 ms (18 min) | 1 440 000 ms (24 min) | 1 800 000 ms (30 min) |
+| `rinseAgitTime_ms` | 3 000 ms (3 s) | 4 000 ms (4 s) | 5 000 ms (5 s) | 6 000 ms (6 s) |
+| `rinseTotal_ms` | 360 000 ms (6 min) | 480 000 ms (8 min) | 600 000 ms (10 min) | 720 000 ms (12 min) |
+| `spinTime_ms` | 240 000 ms (4 min) | 360 000 ms (6 min) | 480 000 ms (8 min) | 600 000 ms (10 min) |
+| `drainTime_ms` | 120 000 ms (2 min) | 120 000 ms (2 min) | 120 000 ms (2 min) | 120 000 ms (2 min) |
+| `fillTimeout_ms` | 600 000 ms (10 min) | 600 000 ms (10 min) | 600 000 ms (10 min) | 600 000 ms (10 min) |
 
 ### 13.1 Duración estimada por ciclo
 
-> Ciclo FULL con 2 enjuagues. El llenado se asume instantáneo (sensor detecta nivel); el timeout es el peor caso.
+> Ciclo FULL con 2 enjuagues. La columna "sin llenado" suma solo lavado, dos enjuagues, tres desagües y centrifugado. No cuenta el tiempo real de entrada de agua.
 
-| Modo | Duración aproximada |
-|---|---|
-| Suave | ~35 min |
-| Normal | ~55 min |
-| Fuerte | ~90 min |
-| Muy Fuerte | ~140 min |
+| Modo | FULL sin llenado | Estimación FULL con llenado normal* |
+|---|---|---|
+| Suave | 28 min | ~37 min |
+| Normal | 38 min | ~47 min |
+| Fuerte | 48 min | ~57 min |
+| Muy Fuerte | 58 min | ~67 min |
 
-> El tiempo exacto depende de cuánto tarda el agua en llenar la tina.
+* Estimación calculada suponiendo **3 llenados de ~3 min cada uno**: uno para lavado y dos para enjuague. En una instalación real este tiempo puede subir o bajar según presión, nivel configurado, tamaño de la tina y caudal de las válvulas.
+
+> El `fillTimeout_ms` de 10 min no representa el tiempo normal de llenado. Es solo el límite máximo antes de declarar error por falta de agua.
 
 ---
 
@@ -1068,7 +1082,7 @@ Si el OLED no está físicamente conectado, el firmware continúa funcionando no
 ```
 1. Abrir la página web
 2. En el selector "Modo" del panel Parámetros → elegir "Normal"
-3. En el campo "Centrifugado total (ms)" → escribir 480000 (8 minutos)
+3. En el campo "Centrifugado total (min:seg)" → escribir 8:00
 4. Pulsar "Guardar parámetros del modo"
 5. Toast verde: "Parametros guardados"
 6. El cambio persiste después de reiniciar el ESP32

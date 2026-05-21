@@ -78,6 +78,18 @@ static const BuzzerStep BUZZER_FINISH[] = {
 };
 static const BuzzerStep BUZZER_ERROR[]   = {{900, 140}, {0, 50}, {700, 140}, {0, 50}, {900, 140}};
 
+// Patrón: Aviso de suavizante (tres beeps cortos)
+static const BuzzerStep BUZZER_SUAVISANTE[] = {
+    {1800, 120}, {0, 80}, {1800, 120}, {0, 80}, {1800, 120}
+};
+
+// Prototipo necesario para evitar error de compilación
+void playBuzzerPattern(const BuzzerStep* pattern, size_t len);
+
+void beepSuavisante() {
+    playBuzzerPattern(BUZZER_SUAVISANTE, sizeof(BUZZER_SUAVISANTE) / sizeof(BUZZER_SUAVISANTE[0]));
+}
+
 static const BuzzerStep* buzzerPattern = nullptr;
 static size_t buzzerPatternLen = 0;
 static size_t buzzerStepIndex = 0;
@@ -94,9 +106,31 @@ static Preferences prefs;
 static const char* PREF_NS = "lavadora";
 static const char* PREF_KEY = "cfg";
 static const uint32_t CONFIG_MAGIC = 0x4C564A53;  // LVJS
-static const uint16_t CONFIG_VERSION = 3;
+static const uint16_t CONFIG_VERSION = 5;
 static const size_t WIFI_SSID_MAX_LEN = 32;
 static const size_t WIFI_PASSWORD_MAX_LEN = 63;
+
+struct PersistedConfigV3 {
+    struct LegacyWashParams {
+        uint32_t agitTime_ms;
+        uint32_t agitPause_ms;
+        uint32_t washTotal_ms;
+        uint32_t rinseAgitTime_ms;
+        uint32_t rinseTotal_ms;
+        uint32_t spinTime_ms;
+        uint32_t drainTime_ms;
+        uint32_t fillTimeout_ms;
+    };
+
+    uint32_t magic;
+    uint16_t version;
+    uint8_t mode;
+    uint8_t cycle;
+    uint8_t water;
+    char wifiSsid[WIFI_SSID_MAX_LEN + 1];
+    char wifiPassword[WIFI_PASSWORD_MAX_LEN + 1];
+    LegacyWashParams params[static_cast<uint8_t>(WashMode::MODE_COUNT)];
+};
 
 struct PersistedConfig {
     uint32_t magic;
@@ -387,8 +421,8 @@ bool finishAlertActive() {
 }
 
 bool finishAlertOn() {
-    if (!finishAlertActive() || finishAlertStart == 0) return false;
-    uint32_t elapsed = millis() - finishAlertStart;
+    if (!finishAlertActive() || finishAlert_start == 0) return false;
+    uint32_t elapsed = millis() - finishAlert_start;
     uint32_t cycleMs = FINISH_ON_MS + FINISH_OFF_MS;
     uint32_t slot = elapsed / cycleMs;
     if (slot >= FINISH_REPEAT) return false;
@@ -396,8 +430,8 @@ bool finishAlertOn() {
 }
 
 void stopFinishAlert() {
-    finishAlertStart = 0;
-    finishAlertUntil = 0;
+    finishAlert_start = 0;
+    finishAlert_until = 0;
 
     if (buzzerPattern == BUZZER_FINISH) {
         ledcWriteTone(BUZZER_CHANNEL, 0);
@@ -435,8 +469,8 @@ void beepPause()  { playBuzzerPattern(BUZZER_PAUSE,  sizeof(BUZZER_PAUSE)  / siz
 void beepStop()   { playBuzzerPattern(BUZZER_STOP,   sizeof(BUZZER_STOP)   / sizeof(BUZZER_STOP[0])); }
 void beepFinish() {
     playBuzzerPattern(BUZZER_FINISH, sizeof(BUZZER_FINISH) / sizeof(BUZZER_FINISH[0]));
-    finishAlertStart = millis();
-    finishAlertUntil = finishAlertStart + (FINISH_REPEAT * (FINISH_ON_MS + FINISH_OFF_MS));
+    finishAlert_start = millis();
+    finishAlert_until = finishAlert_start + (FINISH_REPEAT * (FINISH_ON_MS + FINISH_OFF_MS));
 }
 void beepError()  { playBuzzerPattern(BUZZER_ERROR,  sizeof(BUZZER_ERROR)  / sizeof(BUZZER_ERROR[0])); }
 
@@ -857,40 +891,88 @@ void restoreDefaultModeParams() {
 }
 
 void loadPersistentConfig() {
-    PersistedConfig cfg = {};
     prefs.begin(PREF_NS, true);
     size_t len = prefs.getBytesLength(PREF_KEY);
     if (len == sizeof(PersistedConfig)) {
+        PersistedConfig cfg = {};
         prefs.getBytes(PREF_KEY, &cfg, sizeof(PersistedConfig));
-    }
-    prefs.end();
+            if (len == sizeof(PersistedConfig)) { 
 
-    if (len != sizeof(PersistedConfig) || cfg.magic != CONFIG_MAGIC || cfg.version != CONFIG_VERSION) {
-        Serial.println("Config NVS no valida, usando defaults.");
+        if (cfg.magic != CONFIG_MAGIC || cfg.version != CONFIG_VERSION) {
+            Serial.println("Config NVS no valida, usando defaults.");
+            savePersistentConfig();
+            return;
+        }
+
+        if (cfg.mode < static_cast<uint8_t>(WashMode::MODE_COUNT)) {
+            selectedMode = static_cast<WashMode>(cfg.mode);
+        }
+        if (cfg.cycle < static_cast<uint8_t>(CycleConfig::CYCLE_COUNT)) {
+            selectedCycle = static_cast<CycleConfig>(cfg.cycle);
+        }
+        if (cfg.water < static_cast<uint8_t>(WaterFillMode::WATER_COUNT)) {
+            selectedWater = static_cast<WaterFillMode>(cfg.water);
+        }
+
+        for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
+            washer.params[i] = cfg.params[i];
+        }
+
+        if (cfg.wifiSsid[0] != '\0') {
+            copyWifiValue(apSsid, sizeof(apSsid), cfg.wifiSsid);
+        }
+        copyWifiValue(apPassword, sizeof(apPassword), cfg.wifiPassword);
+
+        Serial.println("Config cargada desde NVS.");
+        return;
+    }
+
+    if (len == sizeof(PersistedConfigV3)) {
+        PersistedConfigV3 cfg = {};
+        prefs.getBytes(PREF_KEY, &cfg, sizeof(PersistedConfigV3));
+        prefs.end();
+
+        if (cfg.magic != CONFIG_MAGIC || cfg.version != 3) {
+            Serial.println("Config NVS legacy no valida, usando defaults.");
+            savePersistentConfig();
+            return;
+        }
+
+        if (cfg.mode < static_cast<uint8_t>(WashMode::MODE_COUNT)) {
+            selectedMode = static_cast<WashMode>(cfg.mode);
+        }
+        if (cfg.cycle < static_cast<uint8_t>(CycleConfig::CYCLE_COUNT)) {
+            selectedCycle = static_cast<CycleConfig>(cfg.cycle);
+        }
+        if (cfg.water < static_cast<uint8_t>(WaterFillMode::WATER_COUNT)) {
+            selectedWater = static_cast<WaterFillMode>(cfg.water);
+        }
+
+        for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
+            washer.params[i].agitTime_ms = cfg.params[i].agitTime_ms;
+            washer.params[i].agitPause_ms = cfg.params[i].agitPause_ms;
+            washer.params[i].washTotal_ms = cfg.params[i].washTotal_ms;
+            washer.params[i].rinseAgitTime_ms = cfg.params[i].rinseAgitTime_ms;
+            washer.params[i].rinseTotal_ms = cfg.params[i].rinseTotal_ms;
+            washer.params[i].spinTime_ms = cfg.params[i].spinTime_ms;
+            washer.params[i].drainTime_ms = cfg.params[i].drainTime_ms;
+            washer.params[i].fillEstimate_ms = DEFAULT_PARAMS[i].fillEstimate_ms;
+            washer.params[i].fillTimeout_ms = cfg.params[i].fillTimeout_ms;
+        }
+
+        if (cfg.wifiSsid[0] != '\0') {
+            copyWifiValue(apSsid, sizeof(apSsid), cfg.wifiSsid);
+        }
+        copyWifiValue(apPassword, sizeof(apPassword), cfg.wifiPassword);
+
+        Serial.println("Config NVS migrada a estimacion de llenado separada.");
         savePersistentConfig();
         return;
     }
 
-    if (cfg.mode < static_cast<uint8_t>(WashMode::MODE_COUNT)) {
-        selectedMode = static_cast<WashMode>(cfg.mode);
-    }
-    if (cfg.cycle < static_cast<uint8_t>(CycleConfig::CYCLE_COUNT)) {
-        selectedCycle = static_cast<CycleConfig>(cfg.cycle);
-    }
-    if (cfg.water < static_cast<uint8_t>(WaterFillMode::WATER_COUNT)) {
-        selectedWater = static_cast<WaterFillMode>(cfg.water);
-    }
-
-    for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
-        washer.params[i] = cfg.params[i];
-    }
-
-    if (cfg.wifiSsid[0] != '\0') {
-        copyWifiValue(apSsid, sizeof(apSsid), cfg.wifiSsid);
-    }
-    copyWifiValue(apPassword, sizeof(apPassword), cfg.wifiPassword);
-
-    Serial.println("Config cargada desde NVS.");
+    prefs.end();
+    Serial.println("Config NVS no valida, usando defaults.");
+    savePersistentConfig();
 }
 
 void savePersistentConfig() {
@@ -1050,8 +1132,10 @@ void setupWebServer() {
         if (request->hasParam("wtime", true)) p.washTotal_ms = parseUInt(request->getParam("wtime", true)->value(), p.washTotal_ms);
         if (request->hasParam("rtime", true)) p.rinseAgitTime_ms = parseUInt(request->getParam("rtime", true)->value(), p.rinseAgitTime_ms);
         if (request->hasParam("rtimeTotal", true)) p.rinseTotal_ms = parseUInt(request->getParam("rtimeTotal", true)->value(), p.rinseTotal_ms);
+        if (request->hasParam("enableSecondRinse", true)) p.enableSecondRinse = (request->getParam("enableSecondRinse", true)->value() == "1");
         if (request->hasParam("spin", true)) p.spinTime_ms = parseUInt(request->getParam("spin", true)->value(), p.spinTime_ms);
         if (request->hasParam("drain", true)) p.drainTime_ms = parseUInt(request->getParam("drain", true)->value(), p.drainTime_ms);
+        if (request->hasParam("fillEstimate", true)) p.fillEstimate_ms = parseUInt(request->getParam("fillEstimate", true)->value(), p.fillEstimate_ms);
         if (request->hasParam("fill", true)) p.fillTimeout_ms = parseUInt(request->getParam("fill", true)->value(), p.fillTimeout_ms);
 
         washer.params[static_cast<uint8_t>(targetMode)] = p;
@@ -1169,8 +1253,10 @@ String jsonConfig() {
         s += "\"wtime\":" + String(p.washTotal_ms) + ",";
         s += "\"rtime\":" + String(p.rinseAgitTime_ms) + ",";
         s += "\"rtimeTotal\":" + String(p.rinseTotal_ms) + ",";
+        s += "\"enableSecondRinse\":" + String(p.enableSecondRinse ? 1 : 0) + ",";
         s += "\"spin\":" + String(p.spinTime_ms) + ",";
         s += "\"drain\":" + String(p.drainTime_ms) + ",";
+        s += "\"fillEstimate\":" + String(p.fillEstimate_ms) + ",";
         s += "\"fill\":" + String(p.fillTimeout_ms);
         s += "}";
     }
@@ -1319,24 +1405,31 @@ String htmlPage() {
       </div>
     </section>
 
-    <section class="card">
-      <h3>Parametros por modo</h3>
-      <div class="row">
-        <div><label>Lavado: tiempo total (ms)</label><input id="wtime" type="number" min="1000" /></div>
-        <div><label>Lavado: giro por sentido (ms)</label><input id="agit" type="number" min="200" /></div>
-        <div><label>Enjuague: tiempo total (ms)</label><input id="rtimeTotal" type="number" min="1000" /></div>
-        <div><label>Enjuague: giro por sentido (ms)</label><input id="rtime" type="number" min="200" /></div>
-        <div><label>Centrifugado total (ms)</label><input id="spin" type="number" min="1000" /></div>
-        <div><label>Desagüe (ms)</label><input id="drain" type="number" min="1000" /></div>
-        <div><label>Pausa entre cambios de sentido (ms)</label><input id="pause" type="number" min="100" /></div>
-        <div><label>Tiempo maximo de llenado (ms)</label><input id="fill" type="number" min="1000" /></div>
-      </div>
+        <section class="card">
+            <h3>Parametros por modo</h3>
+            <div class="row">
+                <div><label>Lavado: tiempo total (min:seg)</label><input id="wtime" type="text" inputmode="numeric" placeholder="1:30" /></div>
+                <div><label>Lavado: pulso de motor (min:seg)</label><input id="agit" type="text" inputmode="numeric" placeholder="0:05" /></div>
+                <div><label>Enjuague: tiempo total (min:seg)</label><input id="rtimeTotal" type="text" inputmode="numeric" placeholder="2:00" /></div>
+                <div style="display:flex;align-items:center;margin-top:8px;">
+                  <input id="enableSecondRinse" type="checkbox" style="margin-right:8px;" />
+                  <label for="enableSecondRinse" style="margin:0;">Segundo enjuague</label>
+                </div>
+                <div><label>Enjuague: pulso de motor (min:seg)</label><input id="rtime" type="text" inputmode="numeric" placeholder="0:05" /></div>
+                <div><label>Centrifugado total (min:seg)</label><input id="spin" type="text" inputmode="numeric" placeholder="6:00" /></div>
+                <div><label>Desagüe (min:seg)</label><input id="drain" type="text" inputmode="numeric" placeholder="0:30" /></div>
+                <div><label>Pausa entre pulsos (min:seg)</label><input id="pause" type="text" inputmode="numeric" placeholder="0:01" /></div>
+                <div><label>Tiempo estimado de llenado (min:seg)</label><input id="fillEstimate" type="text" inputmode="numeric" placeholder="3:00" /></div>
+                <div><label>Timeout maximo de llenado (min:seg)</label><input id="fill" type="text" inputmode="numeric" placeholder="10:00" /></div>
+            </div>
             <p class="muted" style="margin-top:10px; font-size:.88rem; line-height:1.35;">
-                Guía rápida: 1000 ms = 1 segundo. Ejemplo: 5000 ms = 5 s.<br>
+                Escribe los tiempos como minutos:segundos. Ejemplo: 0:05 son 5 segundos, 1:30 es 1 minuto con 30 segundos.<br>
                 El tiempo total define cuánto dura completa la fase de lavado o enjuague.<br>
-                La pausa entre inversiones controla cuánto espera antes de cambiar de sentido.<br>
+                La pausa entre pulsos controla cuánto espera antes del siguiente encendido del motor.<br>
                 Si subes el tiempo total, la fase dura más.<br>
-                Si subes el timeout de llenado, tarda más en declarar error por falta de agua.
+                El estimado de llenado se usa para mostrar tiempos más reales en la web.<br>
+                El timeout de llenado sigue siendo solo la protección antes de declarar error por falta de agua.<br>
+                <b>Ambos enjuagues usan los mismos tiempos configurados para enjuague.<br>El segundo enjuague puede activarse o desactivarse por modo.</b>
             </p>
             <div class="row" style="margin-top:10px;">
                 <button id="saveParamsBtn" onclick="saveParams()">Guardar parametros del modo</button>
@@ -1372,7 +1465,47 @@ let statusData = null;
 let configData = null;
 let hasLocalChanges = false;
 
-const paramFieldIds = ['agit','pause','wtime','rtime','rtimeTotal','spin','drain','fill'];
+const paramFieldIds = ['agit','pause','wtime','rtime','rtimeTotal','enableSecondRinse','spin','drain','fillEstimate','fill'];
+
+function formatEditorDuration(ms) {
+    const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function parseEditorDuration(value, label) {
+    const text = String(value || '').trim();
+    if (!text) {
+        throw new Error(`Debes escribir el tiempo de ${label} en formato min:seg.`);
+    }
+
+    const parts = text.split(':');
+    if (parts.length > 2 || parts.some(part => part === '')) {
+        throw new Error(`El tiempo de ${label} debe tener formato min:seg, por ejemplo 1:30.`);
+    }
+
+    let minutes = 0;
+    let seconds = 0;
+    if (parts.length === 1) {
+        if (!/^\d+$/.test(parts[0])) {
+            throw new Error(`El tiempo de ${label} debe tener solo numeros o formato min:seg.`);
+        }
+        seconds = Number(parts[0]);
+    } else {
+        if (!/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) {
+            throw new Error(`El tiempo de ${label} debe tener solo numeros en formato min:seg.`);
+        }
+        minutes = Number(parts[0]);
+        seconds = Number(parts[1]);
+    }
+
+    if (seconds >= 60) {
+        throw new Error(`Los segundos de ${label} deben estar entre 0 y 59.`);
+    }
+
+    return ((minutes * 60) + seconds) * 1000;
+}
 
 function formatDuration(ms) {
     const sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
@@ -1398,18 +1531,18 @@ function estimateSelectedTotalMs() {
 
     switch (cycleId) {
         case 0:
-            return p.fill + p.wtime +
-                   p.drain + p.fill + rinseHalf +
-                   p.drain + p.fill + rinseHalf +
+                 return p.fillEstimate + p.wtime +
+                     p.drain + p.fillEstimate + rinseHalf +
+                     p.drain + p.fillEstimate + rinseHalf +
                    p.drain + p.spin;
         case 1:
-            return p.drain + p.fill + rinseHalf +
-                   p.drain + p.fill + rinseHalf +
+                 return p.drain + p.fillEstimate + rinseHalf +
+                     p.drain + p.fillEstimate + rinseHalf +
                    p.drain + p.spin;
-        case 2: return p.fill + p.wtime + p.drain;
+             case 2: return p.fillEstimate + p.wtime + p.drain;
         case 3:
-            return p.drain + p.fill + rinseHalf +
-                   p.drain + p.fill + rinseHalf;
+                 return p.drain + p.fillEstimate + rinseHalf +
+                     p.drain + p.fillEstimate + rinseHalf;
         case 4: return p.drain + p.spin;
         default: return 0;
     }
@@ -1467,7 +1600,7 @@ function updateEditLock() {
     const lockTargets = [
         'cycle','mode','water','saveSelBtn','saveParamsBtn',
         'resetParamsBtn',
-        'agit','pause','wtime','rtime','rtimeTotal','spin','drain','fill',
+        'agit','pause','wtime','rtime','rtimeTotal','enableSecondRinse','spin','drain','fillEstimate','fill',
         'wifiSsid','wifiPassword','saveWifiBtn'
     ];
 
@@ -1498,14 +1631,16 @@ function mapApiError(err) {
 
 function getCurrentModeParamsFromForm() {
     return {
-        agit: document.getElementById('agit').value,
-        pause: document.getElementById('pause').value,
-        wtime: document.getElementById('wtime').value,
-        rtime: document.getElementById('rtime').value,
-        rtimeTotal: document.getElementById('rtimeTotal').value,
-        spin: document.getElementById('spin').value,
-        drain: document.getElementById('drain').value,
-        fill: document.getElementById('fill').value
+        agit: String(parseEditorDuration(document.getElementById('agit').value, 'lavado: pulso de motor')),
+        pause: String(parseEditorDuration(document.getElementById('pause').value, 'pausa entre pulsos')),
+        wtime: String(parseEditorDuration(document.getElementById('wtime').value, 'lavado: tiempo total')),
+        rtime: String(parseEditorDuration(document.getElementById('rtime').value, 'enjuague: pulso de motor')),
+        rtimeTotal: String(parseEditorDuration(document.getElementById('rtimeTotal').value, 'enjuague: tiempo total')),
+        enableSecondRinse: document.getElementById('enableSecondRinse').checked ? '1' : '0',
+        spin: String(parseEditorDuration(document.getElementById('spin').value, 'centrifugado')),
+        drain: String(parseEditorDuration(document.getElementById('drain').value, 'desagüe')),
+        fillEstimate: String(parseEditorDuration(document.getElementById('fillEstimate').value, 'llenado estimado')),
+        fill: String(parseEditorDuration(document.getElementById('fill').value, 'llenado maximo'))
     };
 }
 
@@ -1514,7 +1649,12 @@ function areParamFieldsDirty() {
     const modeId = parseInt(document.getElementById('mode').value, 10);
     const p = configData.modes.find(x => x.id === modeId);
     if (!p) return false;
-    const current = getCurrentModeParamsFromForm();
+    let current;
+    try {
+        current = getCurrentModeParamsFromForm();
+    } catch (_) {
+        return true;
+    }
     return paramFieldIds.some(k => String(current[k]) !== String(p[k]));
 }
 
@@ -1620,8 +1760,12 @@ function fillModeParams() {
   const modeId = parseInt(document.getElementById('mode').value, 10);
   const p = configData.modes.find(x => x.id === modeId);
   if (!p) return;
-    paramFieldIds.forEach(k => {
-    document.getElementById(k).value = p[k];
+        paramFieldIds.forEach(k => {
+        if (k === 'enableSecondRinse') {
+            document.getElementById('enableSecondRinse').checked = !!p.enableSecondRinse;
+        } else {
+            document.getElementById(k).value = formatEditorDuration(p[k]);
+        }
   });
 }
 
@@ -1640,7 +1784,8 @@ function configChanged(prev, next) {
         if (!b) return true;
         if (a.agit !== b.agit || a.pause !== b.pause || a.wtime !== b.wtime ||
             a.rtime !== b.rtime || a.rtimeTotal !== b.rtimeTotal ||
-            a.spin !== b.spin || a.drain !== b.drain || a.fill !== b.fill) {
+            a.spin !== b.spin || a.drain !== b.drain ||
+            a.fillEstimate !== b.fillEstimate || a.fill !== b.fill) {
             return true;
         }
     }
@@ -1800,16 +1945,19 @@ async function saveParams() {
     }
   try {
     const mode = document.getElementById('mode').value;
+    const params = getCurrentModeParamsFromForm();
     await apiPost('/api/save', {
       mode,
-      agit: document.getElementById('agit').value,
-      pause: document.getElementById('pause').value,
-            wtime: document.getElementById('wtime').value,
-      rtime: document.getElementById('rtime').value,
-            rtimeTotal: document.getElementById('rtimeTotal').value,
-      spin: document.getElementById('spin').value,
-      drain: document.getElementById('drain').value,
-      fill: document.getElementById('fill').value
+    agit: params.agit,
+    pause: params.pause,
+        wtime: params.wtime,
+    rtime: params.rtime,
+        rtimeTotal: params.rtimeTotal,
+        enableSecondRinse: params.enableSecondRinse,
+    spin: params.spin,
+    drain: params.drain,
+    fillEstimate: params.fillEstimate,
+    fill: params.fill
     });
         hasLocalChanges = false;
     await refreshConfig();

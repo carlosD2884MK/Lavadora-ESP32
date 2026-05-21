@@ -36,31 +36,34 @@ enum class WaterFillMode : uint8_t {
 
 // ── Parámetros de un ciclo (configurables en tiempo de ejecución) ─────────
 struct WashParams {
-    uint32_t agitTime_ms;       // Tiempo de giro por cada sentido durante lavado (ms)
-    uint32_t agitPause_ms;      // Pausa entre cambio de sentido A <-> B (ms)
+    uint32_t agitTime_ms;       // Tiempo de motor encendido por pulso durante lavado (ms)
+    uint32_t agitPause_ms;      // Pausa minima entre pulsos de motor (ms)
     uint32_t washTotal_ms;      // Tiempo total de la fase de lavado (ms)
-    uint32_t rinseAgitTime_ms;  // Tiempo de giro por cada sentido durante enjuague (ms)
+    uint32_t rinseAgitTime_ms;  // Tiempo de motor encendido por pulso durante enjuague (ms)
     uint32_t rinseTotal_ms;     // Tiempo total de la fase de enjuague (ms)
     uint32_t spinTime_ms;       // Duracion total de centrifugado (ms)
     uint32_t drainTime_ms;      // Duracion de desagüe (ms)
+    uint32_t fillEstimate_ms;   // Tiempo estimado de llenado usado para mostrar duraciones (ms)
     uint32_t fillTimeout_ms;    // Tiempo maximo para llenado antes de error (ms)
+    bool enableSecondRinse;     // Habilita el segundo enjuague
 };
 
 // ── Valores por defecto ───────────────────────────────────────────────────
 // Columnas:
-// 1) agitTime_ms      -> giro por sentido en lavado
-// 2) agitPause_ms     -> pausa entre inversiones
+// 1) agitTime_ms      -> tiempo de pulso de motor en lavado
+// 2) agitPause_ms     -> pausa entre pulsos
 // 3) washTotal_ms     -> tiempo total de lavado
-// 4) rinseAgitTime_ms -> giro por sentido en enjuague
+// 4) rinseAgitTime_ms -> tiempo de pulso de motor en enjuague
 // 5) rinseTotal_ms    -> tiempo total de enjuague
 // 6) spinTime_ms      -> tiempo total de centrifugado
 // 7) drainTime_ms     -> tiempo de desagüe
-// 8) fillTimeout_ms   -> timeout de llenado
+// 8) fillEstimate_ms  -> tiempo estimado de llenado para mostrar en la web
+// 9) fillTimeout_ms   -> timeout de llenado
 static const WashParams DEFAULT_PARAMS[4] = {
-    /* SOFT    */ {  5000,  1000,  60000,  5000,  120000, 120000,  30000, 180000 },
-    /* NORMAL  */ {  5000,  1000,  86400,  5000,  120000, 360000, 180000, 180000 },
-    /* STRONG  */ {  8000,  1000, 166000,  5000,  120000, 420000, 180000, 180000 },
-    /* XSTRONG */ { 12000,  1000, 295200,  5000,  120000, 480000, 180000, 180000 },
+    /* SOFT    */ {   4000,  1000,  720000,   3000,  360000, 240000, 120000, 900000, 1200000, true },
+    /* NORMAL  */ {   5000,  1000, 1080000,   4000,  480000, 360000, 120000, 900000, 1200000, true },
+    /* STRONG  */ {   7000,  1000, 1440000,   5000,  600000, 480000, 120000, 900000, 1200000, true },
+    /* XSTRONG */ {  10000,  1000, 1800000,   6000,  720000, 600000, 120000, 900000, 1200000, true },
 };
 
 // ── Etiquetas ─────────────────────────────────────────────────────────────

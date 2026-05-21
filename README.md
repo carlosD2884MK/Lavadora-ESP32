@@ -20,6 +20,34 @@ La lavadora permite:
 - Elegir agua fria, caliente o ambas
 - Pausar, reanudar o cancelar un proceso
 
+## Tiempos de lavado por modo
+
+Los tiempos base actualmente configurados son estos:
+
+| Modo | Pulso lavado | Lavado total | Pulso enjuague | Enjuague total | Centrifugado |
+|---|---|---|---|---|---|
+| Suave | 4 s | 12 min | 3 s | 6 min | 4 min |
+| Normal | 5 s | 18 min | 4 s | 8 min | 6 min |
+| Fuerte | 7 s | 24 min | 5 s | 10 min | 8 min |
+| Muy Fuerte | 10 s | 30 min | 6 s | 12 min | 10 min |
+
+En todos los modos:
+
+- La pausa entre pulsos es de 1 segundo
+- El desagüe dura 2 minutos
+- El timeout de llenado es de 10 minutos como protección
+
+Duración aproximada del ciclo completo FULL sin contar llenado de agua:
+
+| Modo | Duración FULL sin llenado | Estimación con llenado normal |
+|---|---|---|
+| Suave | 28 min | ~37 min |
+| Normal | 38 min | ~47 min |
+| Fuerte | 48 min | ~57 min |
+| Muy Fuerte | 58 min | ~67 min |
+
+La estimación considera 3 llenados de alrededor de 3 minutos cada uno. Ese tiempo puede variar según la presión de agua y el nivel real de llenado.
+
 ## Como mueve el motor
 
 El comportamiento actual del motor es este:
@@ -198,8 +226,16 @@ La pagina web muestra un panel de control sencillo donde puedes:
 - Guardar la seleccion
 - Cambiar el nombre de la red WiFi del equipo
 - Cambiar la clave WiFi del equipo
-- Ajustar tiempos de funcionamiento
+- Ajustar tiempos de funcionamiento usando formato minutos:segundos
 - Restaurar los tiempos de fabrica si alguien modifico mal los valores
+
+En la seccion de parametros, los tiempos se escriben como minutos:segundos. Por ejemplo:
+
+- 0:05 significa 5 segundos
+- 1:30 significa 1 minuto con 30 segundos
+- 8:00 significa 8 minutos
+
+La pagina convierte esos valores internamente a milisegundos antes de guardarlos en la lavadora.
 
 ### Configuracion WiFi desde la web
 
@@ -344,3 +380,12 @@ Para una operacion normal del dia a dia:
 ## Mas informacion
 
 Si necesitas una explicacion mas amplia del funcionamiento interno y de todas las opciones disponibles, revisa [MANUAL.md](MANUAL.md).
+
+## Cambios recientes (2026-05-21)
+- Checkbox "Segundo enjuague" en la web, editable por modo, con ayuda contextual.
+- El valor se guarda y persiste por modo (NVS), editable desde la web y API.
+- Valor por defecto: activo.
+- Migración automática de configuraciones previas.
+- Lógica robusta para uno o dos enjuagues.
+- Aviso auditivo al iniciar el segundo enjuague.
+- Web embebida sincronizada con backend.

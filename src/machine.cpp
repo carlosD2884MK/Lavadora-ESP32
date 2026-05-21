@@ -41,11 +41,17 @@ void WashingMachine::begin() {
 void WashingMachine::update() {
     switch (_phase) {
         case CyclePhase::FILLING_WASH:
-        case CyclePhase::FILLING_RINSE:  updateFilling();   break;
+        case CyclePhase::FILLING_RINSE_1:
+        case CyclePhase::FILLING_RINSE_2:
+            updateFilling();   break;
         case CyclePhase::WASHING:
-        case CyclePhase::RINSING:        updateAgitating(); break;
+        case CyclePhase::RINSING_1:
+        case CyclePhase::RINSING_2:
+            updateAgitating(); break;
         case CyclePhase::DRAINING_WASH:
-        case CyclePhase::DRAINING_RINSE: updateDraining();  break;
+        case CyclePhase::DRAINING_RINSE_1:
+        case CyclePhase::DRAINING_RINSE_2:
+            updateDraining();  break;
         case CyclePhase::SPINNING:       updateSpinning();  break;
         default: break;  // IDLE, PAUSED, ERROR: sin acción
     }
@@ -60,11 +66,13 @@ bool WashingMachine::start(CycleConfig cycle, WashMode mode) {
     _rinseCount = 0;
     switch (cycle) {
         case CycleConfig::FULL:
+            enterPhase(CyclePhase::FILLING_WASH);  break;
         case CycleConfig::WASH_ONLY:
             enterPhase(CyclePhase::FILLING_WASH);  break;
         case CycleConfig::RINSE_SPIN:
+            enterPhase(CyclePhase::FILLING_RINSE_1); break;
         case CycleConfig::RINSE_ONLY:
-            enterPhase(CyclePhase::DRAINING_RINSE); break;
+            enterPhase(CyclePhase::FILLING_RINSE_1); break;
         case CycleConfig::SPIN_ONLY:
             enterPhase(CyclePhase::SPINNING);      break;
         default: break;
@@ -106,23 +114,22 @@ void WashingMachine::resume() {
     // Reiniciar salidas de hardware según el estado restaurado
     switch (_phase) {
         case CyclePhase::FILLING_WASH:
-        case CyclePhase::FILLING_RINSE:
+        case CyclePhase::FILLING_RINSE_1:
+        case CyclePhase::FILLING_RINSE_2:
             setFill(true);
             setDrain(false);
             break;
         case CyclePhase::WASHING:
-        case CyclePhase::RINSING:
-            if (_motorPhase == MotorPhase::GOING_A) {
-                applyMotorDirection(false, true);
-            } else if (_motorPhase == MotorPhase::GOING_B) {
+        case CyclePhase::RINSING_1:
+        case CyclePhase::RINSING_2:
+            if (_motorPhase == MotorPhase::GOING_A || _motorPhase == MotorPhase::GOING_B) {
                 applyMotorDirection(false, true);
             }
             setDrain(false);
-            // Si estaba en pausa interna del motor, los relés quedan apagados
-            // hasta que el timer dispare la siguiente dirección — correcto.
             break;
         case CyclePhase::DRAINING_WASH:
-        case CyclePhase::DRAINING_RINSE:
+        case CyclePhase::DRAINING_RINSE_1:
+        case CyclePhase::DRAINING_RINSE_2:
             setDrain(true);
             setSpin(false);
             break;
@@ -166,7 +173,7 @@ const char* WashingMachine::phaseLabel() const {
     if (_refillingLevel && _phase == CyclePhase::WASHING) {
         return "Lavado (Llenando)";
     }
-    if (_refillingLevel && _phase == CyclePhase::RINSING) {
+    if (_refillingLevel && (_phase == CyclePhase::RINSING_1 || _phase == CyclePhase::RINSING_2)) {
         return "Enjuagando (Llenando)";
     }
     if (_phase == CyclePhase::SPINNING && _spinningDrainStage) {
@@ -203,7 +210,7 @@ uint32_t WashingMachine::phaseDurationMs(CyclePhase phase, const WashParams& p) 
     switch (phase) {
         case CyclePhase::FILLING_WASH:
         case CyclePhase::FILLING_RINSE:
-            return p.fillTimeout_ms;
+            return p.fillEstimate_ms;
         case CyclePhase::WASHING:
             return p.washTotal_ms;
         case CyclePhase::RINSING:
@@ -247,70 +254,157 @@ uint32_t WashingMachine::remainingTotalMs() const {
 
     const WashParams& p = params[static_cast<uint8_t>(_mode)];
     const CyclePhase currentPhase = activePhase();
-    const bool hasSpin = (_cycle == CycleConfig::FULL || _cycle == CycleConfig::RINSE_SPIN);
-    const uint32_t rinseHalfMs = (p.rinseTotal_ms > 1) ? (p.rinseTotal_ms / 2) : p.rinseTotal_ms;
     uint32_t total = remainingCurrentPhaseMs();
 
-    switch (currentPhase) {
-        case CyclePhase::FILLING_WASH:
-            total += p.washTotal_ms;
-            if (_cycle == CycleConfig::FULL) {
-                total += p.drainTime_ms + p.fillTimeout_ms + rinseHalfMs +
-                         p.drainTime_ms + p.fillTimeout_ms + rinseHalfMs +
-                         p.drainTime_ms + p.spinTime_ms;
-            }
-            break;
-
-        case CyclePhase::WASHING:
-            if (_cycle == CycleConfig::FULL) {
-                total += p.drainTime_ms + p.fillTimeout_ms + rinseHalfMs +
-                         p.drainTime_ms + p.fillTimeout_ms + rinseHalfMs +
-                         p.drainTime_ms + p.spinTime_ms;
-            }
-            break;
-
-        case CyclePhase::DRAINING_WASH:
-            if (_cycle == CycleConfig::FULL) {
-                total += p.fillTimeout_ms + p.rinseTotal_ms + p.drainTime_ms + p.spinTime_ms;
-            }
-            break;
-
-        case CyclePhase::FILLING_RINSE:
-            if (_rinseCount == 0) {
-                total += rinseHalfMs + p.drainTime_ms + p.fillTimeout_ms + rinseHalfMs;
-                if (hasSpin) total += p.drainTime_ms + p.spinTime_ms;
-            } else {
-                total += rinseHalfMs;
-                if (hasSpin) total += p.drainTime_ms + p.spinTime_ms;
-            }
-            break;
-
-        case CyclePhase::RINSING:
-            if (_rinseCount < 2) {
-                total += p.drainTime_ms + p.fillTimeout_ms + rinseHalfMs;
-                if (hasSpin) total += p.drainTime_ms + p.spinTime_ms;
-            } else if (hasSpin) {
-                total += p.drainTime_ms + p.spinTime_ms;
-            }
-            break;
-
-        case CyclePhase::DRAINING_RINSE:
-            if (_cycle == CycleConfig::SPIN_ONLY) {
+    // Cálculo para dos enjuagues condicionales
+    bool hasSecondRinse = p.enableSecondRinse;
+    if (_cycle == CycleConfig::FULL) {
+        // Lavado + (1 o 2 enjuagues) + centrifugado
+        switch (currentPhase) {
+            case CyclePhase::FILLING_WASH:
+                total += p.washTotal_ms + p.drainTime_ms;
+                total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms; // Enjuague 1
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms; // Enjuague 2
+                }
                 total += p.spinTime_ms;
-            } else if (_rinseCount < 2) {
-                total += p.fillTimeout_ms + rinseHalfMs;
-                if (hasSpin) total += p.drainTime_ms + p.spinTime_ms;
-            }
-            break;
-
-        case CyclePhase::SPINNING:
-            break;
-
-        default:
-            total = 0;
-            break;
+                break;
+            case CyclePhase::WASHING:
+                total += p.drainTime_ms;
+                total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::DRAINING_WASH:
+                total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::FILLING_RINSE_1:
+                total += p.rinseTotal_ms + p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::RINSING_1:
+                total += p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::DRAINING_RINSE_1:
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::FILLING_RINSE_2:
+                total += p.rinseTotal_ms + p.drainTime_ms + p.spinTime_ms;
+                break;
+            case CyclePhase::RINSING_2:
+                total += p.drainTime_ms + p.spinTime_ms;
+                break;
+            case CyclePhase::DRAINING_RINSE_2:
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::SPINNING:
+            default:
+                break;
+        }
+    } else if (_cycle == CycleConfig::RINSE_SPIN) {
+        // Solo enjuague(s) + centrifugado
+        switch (currentPhase) {
+            case CyclePhase::DRAINING_WASH:
+            case CyclePhase::FILLING_RINSE_1:
+                total += p.rinseTotal_ms + p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::RINSING_1:
+                total += p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::DRAINING_RINSE_1:
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::FILLING_RINSE_2:
+                total += p.rinseTotal_ms + p.drainTime_ms + p.spinTime_ms;
+                break;
+            case CyclePhase::RINSING_2:
+                total += p.drainTime_ms + p.spinTime_ms;
+                break;
+            case CyclePhase::DRAINING_RINSE_2:
+                total += p.spinTime_ms;
+                break;
+            case CyclePhase::SPINNING:
+            default:
+                break;
+        }
+    } else if (_cycle == CycleConfig::WASH_ONLY) {
+        // Solo lavado
+        switch (currentPhase) {
+            case CyclePhase::FILLING_WASH:
+                total += p.washTotal_ms + p.drainTime_ms;
+                break;
+            case CyclePhase::WASHING:
+                total += p.drainTime_ms;
+                break;
+            case CyclePhase::DRAINING_WASH:
+            default:
+                break;
+        }
+    } else if (_cycle == CycleConfig::RINSE_ONLY) {
+        // Solo enjuague(s)
+        switch (currentPhase) {
+            case CyclePhase::DRAINING_WASH:
+            case CyclePhase::FILLING_RINSE_1:
+                total += p.rinseTotal_ms + p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                break;
+            case CyclePhase::RINSING_1:
+                total += p.drainTime_ms;
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                break;
+            case CyclePhase::DRAINING_RINSE_1:
+                if (hasSecondRinse) {
+                    total += p.fillEstimate_ms + p.rinseTotal_ms + p.drainTime_ms;
+                }
+                break;
+            case CyclePhase::FILLING_RINSE_2:
+                total += p.rinseTotal_ms + p.drainTime_ms;
+                break;
+            case CyclePhase::RINSING_2:
+                total += p.drainTime_ms;
+                break;
+            case CyclePhase::DRAINING_RINSE_2:
+            case CyclePhase::SPINNING:
+            default:
+                break;
+        }
+    } else if (_cycle == CycleConfig::SPIN_ONLY) {
+        // Solo centrifugado
+        if (currentPhase == CyclePhase::SPINNING) {
+            // nada extra
+        }
     }
-
     return total;
 }
 
@@ -320,9 +414,12 @@ const char* WashingMachine::phaseLabelOf(CyclePhase phase) const {
         case CyclePhase::FILLING_WASH:   return "Lavado (Llenando)";
         case CyclePhase::WASHING:        return "Lavando";
         case CyclePhase::DRAINING_WASH:  return "Lavado (Desaguando)";
-        case CyclePhase::FILLING_RINSE:  return "Enjuague (Llenando)";
-        case CyclePhase::RINSING:        return "Enjuagando";
-        case CyclePhase::DRAINING_RINSE: return "Enjuague (Desaguando)";
+        case CyclePhase::FILLING_RINSE_1:  return "Enjuague 1 (Llenando)";
+        case CyclePhase::RINSING_1:        return "Enjuagando 1";
+        case CyclePhase::DRAINING_RINSE_1: return "Enjuague 1 (Desaguando)";
+        case CyclePhase::FILLING_RINSE_2:  return "Enjuague 2 (Llenando)";
+        case CyclePhase::RINSING_2:        return "Enjuagando 2";
+        case CyclePhase::DRAINING_RINSE_2: return "Enjuague 2 (Desaguando)";
         case CyclePhase::SPINNING:       return "Centrifugando";
         case CyclePhase::PAUSED:         return "Pausado";
         case CyclePhase::ERROR:          return "ERROR";
@@ -342,13 +439,11 @@ void WashingMachine::enterPhase(CyclePhase p) {
 
     switch (p) {
         case CyclePhase::FILLING_WASH:
-        case CyclePhase::FILLING_RINSE:
             motorStop();
             setSpin(false);
             setDrain(false);
             setFill(true);
             break;
-
         case CyclePhase::WASHING:
             setFill(false);
             setSpin(false);
@@ -356,24 +451,53 @@ void WashingMachine::enterPhase(CyclePhase p) {
             _agitCount = 0;
             enterMotorPhase(MotorPhase::GOING_A);
             break;
-
-        case CyclePhase::RINSING:
-            setFill(false);
-            setSpin(false);
-            setDrain(false);
-            _agitCount = 0;
-            if (_rinseCount < 2) _rinseCount++;
-            enterMotorPhase(MotorPhase::GOING_A);
-            break;
-
         case CyclePhase::DRAINING_WASH:
-        case CyclePhase::DRAINING_RINSE:
             motorStop();
             setFill(false);
             setSpin(false);
             setDrain(true);
             break;
-
+        case CyclePhase::FILLING_RINSE_1:
+            motorStop();
+            setSpin(false);
+            setDrain(false);
+            setFill(true);
+            break;
+        case CyclePhase::RINSING_1:
+            setFill(false);
+            setSpin(false);
+            setDrain(false);
+            _agitCount = 0;
+            enterMotorPhase(MotorPhase::GOING_A);
+            break;
+        case CyclePhase::DRAINING_RINSE_1:
+            motorStop();
+            setFill(false);
+            setSpin(false);
+            setDrain(true);
+            break;
+        case CyclePhase::FILLING_RINSE_2:
+            motorStop();
+            setSpin(false);
+            setDrain(false);
+            setFill(true);
+            // Aviso auditivo para suavizante
+            extern void beepSuavisante();
+            beepSuavisante();
+            break;
+        case CyclePhase::RINSING_2:
+            setFill(false);
+            setSpin(false);
+            setDrain(false);
+            _agitCount = 0;
+            enterMotorPhase(MotorPhase::GOING_A);
+            break;
+        case CyclePhase::DRAINING_RINSE_2:
+            motorStop();
+            setFill(false);
+            setSpin(false);
+            setDrain(true);
+            break;
         case CyclePhase::SPINNING:
             motorStop();
             setFill(false);
@@ -381,7 +505,6 @@ void WashingMachine::enterPhase(CyclePhase p) {
             setDrain(true);
             _spinningDrainStage = true;
             break;
-
         case CyclePhase::IDLE:
         case CyclePhase::ERROR:
             motorStop();
@@ -389,7 +512,6 @@ void WashingMachine::enterPhase(CyclePhase p) {
             setSpin(false);
             setDrain(false);
             break;
-
         default: break;
     }
 }
@@ -517,7 +639,7 @@ void WashingMachine::updateAgitating() {
     const WashParams& p  = params[static_cast<uint8_t>(_mode)];
     bool     isWash      = (_phase == CyclePhase::WASHING);
     uint32_t agitTime    = isWash ? p.agitTime_ms     : p.rinseAgitTime_ms;
-    uint32_t phaseTotal   = isWash ? p.washTotal_ms    : ((p.rinseTotal_ms > 1) ? (p.rinseTotal_ms / 2) : p.rinseTotal_ms);
+    uint32_t phaseTotal  = isWash ? p.washTotal_ms    : ((p.rinseTotal_ms > 1) ? (p.rinseTotal_ms / 2) : p.rinseTotal_ms);
     uint32_t now         = millis();
 
     // En lavado y enjuague, el nivel se valida continuamente.
@@ -580,12 +702,12 @@ void WashingMachine::updateAgitating() {
     if (now - _phaseStart >= phaseTotal) {
         enterMotorPhase(MotorPhase::STOPPED);
         if (isWash) {
-            enterPhase(_cycle == CycleConfig::FULL ? CyclePhase::DRAINING_RINSE : CyclePhase::IDLE);
+            enterPhase(CyclePhase::DRAINING_WASH);
         } else {
-            if (_rinseCount < 2) {
-                enterPhase(CyclePhase::DRAINING_RINSE);
-            } else if (_cycle == CycleConfig::FULL || _cycle == CycleConfig::RINSE_SPIN) {
-                enterPhase(CyclePhase::SPINNING);
+            if (_phase == CyclePhase::RINSING_1) {
+                enterPhase(CyclePhase::DRAINING_RINSE_1);
+            } else if (_phase == CyclePhase::RINSING_2) {
+                enterPhase(CyclePhase::DRAINING_RINSE_2);
             } else {
                 enterPhase(CyclePhase::IDLE);
             }
@@ -614,7 +736,20 @@ void WashingMachine::updateDraining() {
     const WashParams& p = params[static_cast<uint8_t>(_mode)];
     if (millis() - _phaseStart >= p.drainTime_ms) {
         setDrain(false);
-        enterPhase(afterDrain());
+        // Transición según la fase de drenaje
+        if (_phase == CyclePhase::DRAINING_WASH) {
+            enterPhase(CyclePhase::FILLING_RINSE_1);
+        } else if (_phase == CyclePhase::DRAINING_RINSE_1) {
+            if (p.enableSecondRinse) {
+                enterPhase(CyclePhase::FILLING_RINSE_2);
+            } else {
+                enterPhase(CyclePhase::SPINNING);
+            }
+        } else if (_phase == CyclePhase::DRAINING_RINSE_2) {
+            enterPhase(CyclePhase::SPINNING);
+        } else {
+            enterPhase(CyclePhase::IDLE);
+        }
     }
 }
 
