@@ -772,9 +772,11 @@ void printModeTimes() {
     Serial.println("------------------------");
 }
 
-void printStatus() {
+void printStatus() 
+{
     uint32_t phaseRemS = washer.remainingCurrentPhaseMs() / 1000;
     uint32_t totalRemS = washer.remainingTotalMs() / 1000;
+	Serial.printf("\n--- ESTADO ACTUAL ---\n");
     Serial.printf("[%s] %s | %s | fase restante: %lu s | total restante: %lu s | agit transcurrido: %lu ms\n",
                   washer.phaseLabel(),
                   modeLabel(washer.mode()),
@@ -782,6 +784,16 @@ void printStatus() {
                   phaseRemS,
                   totalRemS,
                   (unsigned long)washer.agitElapsedMs());
+
+    // Mostrar estado de los relés
+        Serial.printf("Relés: MOTOR_ON=%d, DIR_A=%d, DIR_B=%d, FRIA=%d, CALIENTE=%d, DRAIN=%d\n",
+            digitalRead(Pinout::RELAY_MOTOR_ON),
+            digitalRead(Pinout::RELAY_DIR_A),
+            digitalRead(Pinout::RELAY_DIR_B),
+            digitalRead(Pinout::RELAY_VALVULA_FRIA),
+            digitalRead(Pinout::RELAY_VALVULA_CALIENTE),
+            digitalRead(Pinout::RELAY_DRAIN)
+        );
 }
 
 void handleSerial() {
