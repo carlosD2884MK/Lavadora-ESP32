@@ -26,6 +26,10 @@
 
 // -----------------------------------------------------------------------------
 // Estado principal
+// --- Reset WiFi por pulsadores ---
+static const uint32_t WIFI_RESET_WINDOW_MS = 10000;
+static bool wifiResetDone = false;
+static uint32_t bootTimeMs = 0;
 WashingMachine washer;
 
 static CycleConfig selectedCycle = CycleConfig::FULL;
@@ -262,6 +266,7 @@ static bool isAccessPointHealthy() {
 
 // -----------------------------------------------------------------------------
 void setup() {
+        bootTimeMs = millis();
     Serial.begin(115200);
     setupPins();
     setupBuzzer();
@@ -293,6 +298,25 @@ void setup() {
 }
 
 void loop() {
+        // --- Reset WiFi si los 3 pulsadores están presionados durante los primeros 10s ---
+        if (!wifiResetDone && (millis() - bootTimeMs < WIFI_RESET_WINDOW_MS)) {
+            bool pressedCiclo = digitalRead(btnCiclo.pin) == LOW;
+            bool pressedModo = digitalRead(btnModo.pin) == LOW;
+            bool pressedInicio = digitalRead(btnInicio.pin) == LOW;
+            if (pressedCiclo && pressedModo && pressedInicio) {
+                Serial.println("[WIFI] Restaurando SSID y clave de fábrica por pulsadores...");
+                strncpy(apSsid, WIFI_AP_SSID, WIFI_SSID_MAX_LEN);
+                apSsid[WIFI_SSID_MAX_LEN] = '\0';
+                strncpy(apPassword, WIFI_AP_PASSWORD, WIFI_PASSWORD_MAX_LEN);
+                apPassword[WIFI_PASSWORD_MAX_LEN] = '\0';
+                savePersistentConfig();
+                delay(200);
+                Serial.println("[WIFI] Reiniciando ESP para aplicar red de fábrica...");
+                delay(200);
+                ESP.restart();
+                wifiResetDone = true;
+            }
+        }
     washer.update();
 
     CyclePhase currentPhase = washer.phase();
@@ -758,16 +782,13 @@ void printModeTimes() {
     Serial.println("\n--- TIEMPOS POR MODO ---");
     for (uint8_t i = 0; i < static_cast<uint8_t>(WashMode::MODE_COUNT); i++) {
         const WashParams& p = washer.params[i];
-        Serial.printf("%s | total %lu s, Lavado: giro %lu ms, pausa %lu ms,  | Enjuague: total %lu s, giro %lu ms | Spin: %lu s | Drenaje: %lu s | Llenado TO: %lu s\n",
-                      modeLabel(static_cast<WashMode>(i)),
-                      (unsigned long)(p.washTotal_ms / 1000),
-                      (unsigned long)p.agitTime_ms,
-                      (unsigned long)p.agitPause_ms,
-                      (unsigned long)(p.rinseTotal_ms / 1000),
-                      (unsigned long)p.rinseAgitTime_ms,
-                      (unsigned long)(p.spinTime_ms / 1000),
-                      (unsigned long)(p.drainTime_ms / 1000),
-                      (unsigned long)(p.fillTimeout_ms / 1000));
+        Serial.printf("%s | Lavado: %lu s | Enjuague: %lu s | Spin: %lu s | Drenaje: %lu s | Llenado TO: %lu s\n",
+              modeLabel(static_cast<WashMode>(i)),
+              (unsigned long)(p.washTotal_ms / 1000),
+              (unsigned long)(p.rinseTotal_ms / 1000),
+              (unsigned long)(p.spinTime_ms / 1000),
+              (unsigned long)(p.drainTime_ms / 1000),
+              (unsigned long)(p.fillTimeout_ms / 1000));
     }
     Serial.println("------------------------");
 }
@@ -777,13 +798,21 @@ void printStatus()
     uint32_t phaseRemS = washer.remainingCurrentPhaseMs() / 1000;
     uint32_t totalRemS = washer.remainingTotalMs() / 1000;
 	Serial.printf("\n--- ESTADO ACTUAL ---\n");
-    Serial.printf("[%s] %s | %s | fase restante: %lu s | total restante: %lu s | agit transcurrido: %lu ms\n",
+    int rinseNumber = -1;
+    if (washer.phase() == CyclePhase::FILLING_RINSE || washer.phase() == CyclePhase::RINSING || washer.phase() == CyclePhase::DRAINING_RINSE) {
+        rinseNumber = washer.rinseCount() + 1;
+    }
+    Serial.printf("[%s] %s | %s | fase restante: %lu s | total restante: %lu s | agit transcurrido: %lu ms",
                   washer.phaseLabel(),
                   modeLabel(washer.mode()),
                   cycleLabel(washer.cycle()),
                   phaseRemS,
                   totalRemS,
                   (unsigned long)washer.agitElapsedMs());
+    if (rinseNumber > 0) {
+        Serial.printf(" | Enjuague #%d", rinseNumber);
+    }
+    Serial.println("");
 
     // Mostrar estado de los relés
         Serial.printf("Relés: MOTOR_ON=%d, DIR_A=%d, DIR_B=%d, FRIA=%d, CALIENTE=%d, DRAIN=%d\n",
@@ -1057,14 +1086,30 @@ void setupWebServer() {
 
         WashParams p = washer.params[static_cast<uint8_t>(targetMode)];
 
-        if (request->hasParam("agit", true)) p.agitTime_ms = parseUInt(request->getParam("agit", true)->value(), p.agitTime_ms);
-        if (request->hasParam("pause", true)) p.agitPause_ms = parseUInt(request->getParam("pause", true)->value(), p.agitPause_ms);
+        // Log de valores recibidos
+        Serial.println("[WEB] Parametros recibidos al guardar:");
+        Serial.printf("wtime: %s\n", request->hasParam("wtime", true) ? request->getParam("wtime", true)->value().c_str() : "");
+        Serial.printf("rtimeTotal: %s\n", request->hasParam("rtimeTotal", true) ? request->getParam("rtimeTotal", true)->value().c_str() : "");
+        Serial.printf("spin: %s\n", request->hasParam("spin", true) ? request->getParam("spin", true)->value().c_str() : "");
+        Serial.printf("drain: %s\n", request->hasParam("drain", true) ? request->getParam("drain", true)->value().c_str() : "");
+        Serial.printf("fill: %s\n", request->hasParam("fill", true) ? request->getParam("fill", true)->value().c_str() : "");
+        Serial.printf("fillEst: %s\n", request->hasParam("fillEst", true) ? request->getParam("fillEst", true)->value().c_str() : "");
+
         if (request->hasParam("wtime", true)) p.washTotal_ms = parseUInt(request->getParam("wtime", true)->value(), p.washTotal_ms);
-        if (request->hasParam("rtime", true)) p.rinseAgitTime_ms = parseUInt(request->getParam("rtime", true)->value(), p.rinseAgitTime_ms);
         if (request->hasParam("rtimeTotal", true)) p.rinseTotal_ms = parseUInt(request->getParam("rtimeTotal", true)->value(), p.rinseTotal_ms);
         if (request->hasParam("spin", true)) p.spinTime_ms = parseUInt(request->getParam("spin", true)->value(), p.spinTime_ms);
         if (request->hasParam("drain", true)) p.drainTime_ms = parseUInt(request->getParam("drain", true)->value(), p.drainTime_ms);
         if (request->hasParam("fill", true)) p.fillTimeout_ms = parseUInt(request->getParam("fill", true)->value(), p.fillTimeout_ms);
+        if (request->hasParam("fillEst", true)) p.fillEstimate_ms = parseUInt(request->getParam("fillEst", true)->value(), p.fillEstimate_ms);
+
+        // Log de valores guardados
+        Serial.println("[WEB] Parametros guardados en struct:");
+        Serial.printf("washTotal_ms: %lu\n", (unsigned long)p.washTotal_ms);
+        Serial.printf("rinseTotal_ms: %lu\n", (unsigned long)p.rinseTotal_ms);
+        Serial.printf("spinTime_ms: %lu\n", (unsigned long)p.spinTime_ms);
+        Serial.printf("drainTime_ms: %lu\n", (unsigned long)p.drainTime_ms);
+        Serial.printf("fillTimeout_ms: %lu\n", (unsigned long)p.fillTimeout_ms);
+        Serial.printf("fillEstimate_ms: %lu\n", (unsigned long)p.fillEstimate_ms);
 
         washer.params[static_cast<uint8_t>(targetMode)] = p;
         savePersistentConfig();
@@ -1153,6 +1198,19 @@ String jsonStatus() {
     s += "\"error\":" + String(static_cast<uint8_t>(washer.error())) + ",";
     s += "\"errorLabel\":\"" + String(washer.errorLabel()) + "\",";
     s += "\"waterFull\":" + String(digitalRead(Pinout::SENSOR_NIVEL) == LOW ? "true" : "false");
+    // Mostrar mensaje de suavizante si corresponde y número de enjuague
+    bool suavizante = false;
+    int rinseNumber = -1;
+    if (washer.phase() == CyclePhase::FILLING_RINSE || washer.phase() == CyclePhase::RINSING || washer.phase() == CyclePhase::DRAINING_RINSE) {
+        rinseNumber = washer.rinseCount() + 1; // 1 para primer enjuague, 2 para segundo
+    }
+    if (washer.phase() == CyclePhase::FILLING_RINSE && washer.rinseCount() == 1) {
+        suavizante = true;
+    }
+    s += ",\"suavizante\":";
+    s += (suavizante ? "true" : "false");
+    s += ",\"rinseNumber\":";
+    s += String(rinseNumber);
     s += "}";
     return s;
 }
@@ -1176,14 +1234,12 @@ String jsonConfig() {
         s += "{";
         s += "\"id\":" + String(i) + ",";
         s += "\"label\":\"" + String(modeLabel(static_cast<WashMode>(i))) + "\",";
-        s += "\"agit\":" + String(p.agitTime_ms) + ",";
-        s += "\"pause\":" + String(p.agitPause_ms) + ",";
         s += "\"wtime\":" + String(p.washTotal_ms) + ",";
-        s += "\"rtime\":" + String(p.rinseAgitTime_ms) + ",";
         s += "\"rtimeTotal\":" + String(p.rinseTotal_ms) + ",";
         s += "\"spin\":" + String(p.spinTime_ms) + ",";
         s += "\"drain\":" + String(p.drainTime_ms) + ",";
-        s += "\"fill\":" + String(p.fillTimeout_ms);
+        s += "\"fill\":" + String(p.fillTimeout_ms) + ",";
+        s += "\"fillEst\":" + String(p.fillEstimate_ms);
         s += "}";
     }
 
@@ -1287,6 +1343,8 @@ String htmlPage() {
   </style>
 </head>
 <body>
+<div id="suavizanteMsg" style="display:none; background:#ffe7b0; color:#a05a00; font-weight:bold; padding:10px; margin:10px 0; border-radius:6px; text-align:center; font-size:1.1em;">¡Agrega el suavizante ahora!</div>
+<div id="rinseNumberMsg" style="display:none; background:#e0f7fa; color:#00796b; font-weight:bold; padding:8px; margin:8px 0; border-radius:6px; text-align:center; font-size:1em;"></div>
 <div class="wrap">
   <div class="hero">
                 <p id="currentPhase" class="phaseBig">Conectando...</p>
@@ -1305,14 +1363,19 @@ String htmlPage() {
     <section class="card">
       <h3>Control</h3>
       <div class="row">
-        <div>
-          <label for="cycle">Ciclo</label>
-          <select id="cycle"></select>
-        </div>
-        <div>
-          <label for="mode">Modo</label>
-          <select id="mode"></select>
-        </div>
+                <div>
+                    <label for="cycle">Ciclo</label>
+                    <select id="cycle"></select>
+                </div>
+                <div>
+                    <label for="mode">Modo</label>
+                    <select id="mode" onchange="updateWaterSuggestion()"></select>
+                </div>
+            </div>
+            <div class="row" style="margin-top:4px;">
+                <div style="width:100%">
+                    <span id="waterSuggestion" class="muted" style="font-size:.95em;"></span>
+                </div>
       </div>
             <div class="row" style="margin-top:8px;">
                 <div>
@@ -1334,21 +1397,17 @@ String htmlPage() {
     <section class="card">
       <h3>Parametros por modo</h3>
       <div class="row">
-        <div><label>Lavado: tiempo total (ms)</label><input id="wtime" type="number" min="1000" /></div>
-        <div><label>Lavado: giro por sentido (ms)</label><input id="agit" type="number" min="200" /></div>
-        <div><label>Enjuague: tiempo total (ms)</label><input id="rtimeTotal" type="number" min="1000" /></div>
-        <div><label>Enjuague: giro por sentido (ms)</label><input id="rtime" type="number" min="200" /></div>
-        <div><label>Centrifugado total (ms)</label><input id="spin" type="number" min="1000" /></div>
-        <div><label>Desagüe (ms)</label><input id="drain" type="number" min="1000" /></div>
-        <div><label>Pausa entre cambios de sentido (ms)</label><input id="pause" type="number" min="100" /></div>
-        <div><label>Tiempo maximo de llenado (ms)</label><input id="fill" type="number" min="1000" /></div>
+                <div><label>Lavado</label><input id="wtime" type="text" pattern="[0-9]+:[0-5][0-9]" placeholder="mm:ss" /></div>
+                <div><label>Enjuague</label><input id="rtimeTotal" type="text" pattern="[0-9]+:[0-5][0-9]" placeholder="mm:ss" /></div>
+                <div><label>Centrifugado</label><input id="spin" type="text" pattern="[0-9]+:[0-5][0-9]" placeholder="mm:ss" /></div>
+                <div><label>Desagüe</label><input id="drain" type="text" pattern="[0-9]+:[0-5][0-9]" placeholder="mm:ss" /></div>
+                <div><label>Tiempo estimado de llenado</label><input id="fillEst" type="text" pattern="[0-9]+:[0-5][0-9]" placeholder="mm:ss" /></div>
+                <div><label>Tiempo maximo de llenado</label><input id="fill" type="text" pattern="[0-9]+:[0-5][0-9]" placeholder="mm:ss" /></div>
       </div>
             <p class="muted" style="margin-top:10px; font-size:.88rem; line-height:1.35;">
-                Guía rápida: 1000 ms = 1 segundo. Ejemplo: 5000 ms = 5 s.<br>
-                El tiempo total define cuánto dura completa la fase de lavado o enjuague.<br>
-                La pausa entre inversiones controla cuánto espera antes de cambiar de sentido.<br>
-                Si subes el tiempo total, la fase dura más.<br>
-                Si subes el timeout de llenado, tarda más en declarar error por falta de agua.
+                El tiempo "Tiempo restante total" define cuánto dura completo de la lavadora.<br>
+                El tiempo "Tiempo ciclo actual" define cuánto dura el ciclo actual (lavado, enjuague, centrifugado, llenado, desagüe).<br>
+                El tiempo "Tiempo maximo de llenado" define el timeout de llenado, tarda más en declarar error por falta de agua.
             </p>
             <div class="row" style="margin-top:10px;">
                 <button id="saveParamsBtn" onclick="saveParams()">Guardar parametros del modo</button>
@@ -1380,11 +1439,34 @@ String htmlPage() {
 <div id="toast" class="toast"></div>
 
 <script>
+function updateWaterSuggestion() {
+    const modeSel = document.getElementById('mode');
+    const suggestion = document.getElementById('waterSuggestion');
+    if (!modeSel || !suggestion || !configData) return;
+    const modeId = parseInt(modeSel.value, 10);
+    let text = '';
+    // Asume que el orden de los modos es: 0=Suave, 1=Normal, 2=Fuerte, 3=Muy fuerte
+    if (modeId === 0) text = 'Se sugiere colocar nivel de agua bajo';
+    else if (modeId === 1) text = 'Se sugiere colocar nivel de agua medio';
+    else if (modeId === 2 || modeId === 3) text = 'Se sugiere colocar nivel de agua alto';
+    suggestion.textContent = text;
+}
+function msToMinSec(ms) {
+    ms = Number(ms) || 0;
+    const min = Math.floor(ms / 60000);
+    const sec = Math.floor((ms % 60000) / 1000);
+    return `${min}:${sec.toString().padStart(2, '0')}`;
+}
+function minSecToMs(str) {
+    if (!str || !/^[0-9]+:[0-5][0-9]$/.test(str)) return 0;
+    const [min, sec] = str.split(':').map(Number);
+    return (min * 60 + sec) * 1000;
+}
+
 let statusData = null;
 let configData = null;
 let hasLocalChanges = false;
-
-const paramFieldIds = ['agit','pause','wtime','rtime','rtimeTotal','spin','drain','fill'];
+const paramFieldIds = ['wtime','rtimeTotal','spin','drain','fill','fillEst'];
 
 function formatDuration(ms) {
     const sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
@@ -1450,6 +1532,11 @@ function updateHero() {
     const isPaused = statusData.phase === 'Pausado';
 
     let phaseText = statusData.activePhase || statusData.phase;
+    // Si está en fase de enjuague, agregar el número
+    const rinsePhases = ['Enjuague (Llenando)', 'Enjuagando', 'Enjuague (Desaguando)'];
+    if (rinsePhases.includes(phaseText) && statusData.rinseNumber > 0 && statusData.rinseNumber < 3) {
+        phaseText += ` #${statusData.rinseNumber}`;
+    }
     if (isPaused) phaseText = `Pausado (${statusData.activePhase || 'fase'})`;
     if (statusData.phase === 'Reposo') phaseText = 'Reposo';
     if (isError) phaseText = 'Error';
@@ -1477,9 +1564,8 @@ function updateEditLock() {
     const lockMsg = canEdit ? '' : 'Proceso iniciado: para cambiar ciclo, modo, agua o tiempos debes cancelar.';
 
     const lockTargets = [
-        'cycle','mode','water','saveSelBtn','saveParamsBtn',
-        'resetParamsBtn',
-        'agit','pause','wtime','rtime','rtimeTotal','spin','drain','fill',
+        'cycle','mode','water','saveSelBtn','saveParamsBtn','resetParamsBtn',
+        'wtime','rtime','rtimeTotal','spin','drain','fill','fillEst',
         'wifiSsid','wifiPassword','saveWifiBtn'
     ];
 
@@ -1510,14 +1596,12 @@ function mapApiError(err) {
 
 function getCurrentModeParamsFromForm() {
     return {
-        agit: document.getElementById('agit').value,
-        pause: document.getElementById('pause').value,
-        wtime: document.getElementById('wtime').value,
-        rtime: document.getElementById('rtime').value,
-        rtimeTotal: document.getElementById('rtimeTotal').value,
-        spin: document.getElementById('spin').value,
-        drain: document.getElementById('drain').value,
-        fill: document.getElementById('fill').value
+        wtime: minSecToMs(document.getElementById('wtime').value),
+        rtimeTotal: minSecToMs(document.getElementById('rtimeTotal').value),
+        spin: minSecToMs(document.getElementById('spin').value),
+        drain: minSecToMs(document.getElementById('drain').value),
+        fill: minSecToMs(document.getElementById('fill').value),
+        fillEst: minSecToMs(document.getElementById('fillEst').value)
     };
 }
 
@@ -1586,24 +1670,25 @@ function loadSelectors() {
     const wifiPassword = document.getElementById('wifiPassword');
     const wifiState = document.getElementById('wifiState');
 
-  cycleSel.innerHTML = '';
-  configData.cycles.forEach(c => {
-    const o = document.createElement('option');
-    o.value = c.id;
-    o.textContent = c.label;
-    cycleSel.appendChild(o);
-  });
+    cycleSel.innerHTML = '';
+    configData.cycles.forEach(c => {
+        const o = document.createElement('option');
+        o.value = c.id;
+        o.textContent = c.label;
+        cycleSel.appendChild(o);
+    });
 
-  modeSel.innerHTML = '';
-  configData.modes.forEach(m => {
-    const o = document.createElement('option');
-    o.value = m.id;
-    o.textContent = m.label;
-    modeSel.appendChild(o);
-  });
+    modeSel.innerHTML = '';
+    configData.modes.forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = m.label;
+        modeSel.appendChild(o);
+    });
 
-  cycleSel.value = configData.selectedCycle;
-  modeSel.value = configData.selectedMode;
+    cycleSel.value = configData.selectedCycle;
+    modeSel.value = configData.selectedMode;
+    updateWaterSuggestion();
 
     waterSel.innerHTML = '';
     configData.waters.forEach(w => {
@@ -1633,7 +1718,7 @@ function fillModeParams() {
   const p = configData.modes.find(x => x.id === modeId);
   if (!p) return;
     paramFieldIds.forEach(k => {
-    document.getElementById(k).value = p[k];
+        document.getElementById(k).value = msToMinSec(p[k]);
   });
 }
 
@@ -1737,11 +1822,30 @@ function syncLocalSelections() {
 }
 
 async function refresh() {
-  statusData = await apiGet('/api/status');
-    updateHero();
-    updateStartButton();
-    updateEditLock();
-    syncLocalSelections();
+    statusData = await apiGet('/api/status');
+        updateHero();
+        updateStartButton();
+        updateEditLock();
+        syncLocalSelections();
+        // Mostrar mensaje de suavizante si corresponde
+        const suavizanteMsg = document.getElementById('suavizanteMsg');
+        if (statusData.suavizante) {
+                if (suavizanteMsg) suavizanteMsg.style.display = 'block';
+        } else {
+                if (suavizanteMsg) suavizanteMsg.style.display = 'none';
+        }
+
+    // Mostrar número de enjuague si aplica
+    // const rinseNumberMsg = document.getElementById('rinseNumberMsg');
+    // if (rinseNumberMsg) {
+    //     if (statusData.rinseNumber > 0) {
+    //         rinseNumberMsg.style.display = 'block';
+    //         rinseNumberMsg.innerText = `Enjuague #${statusData.rinseNumber}`;
+    //     } else {
+    //         rinseNumberMsg.style.display = 'none';
+    //         rinseNumberMsg.innerText = '';
+    //     }
+    // }
 }
 
 async function refreshConfig() {
@@ -1810,21 +1914,19 @@ async function saveParams() {
         showToast('Primero cancela para editar', 'err');
         return;
     }
-  try {
-    const mode = document.getElementById('mode').value;
-    await apiPost('/api/save', {
-      mode,
-      agit: document.getElementById('agit').value,
-      pause: document.getElementById('pause').value,
-            wtime: document.getElementById('wtime').value,
-      rtime: document.getElementById('rtime').value,
-            rtimeTotal: document.getElementById('rtimeTotal').value,
-      spin: document.getElementById('spin').value,
-      drain: document.getElementById('drain').value,
-      fill: document.getElementById('fill').value
-    });
+    try {
+        const mode = document.getElementById('mode').value;
+        await apiPost('/api/save', {
+            mode,
+            wtime: minSecToMs(document.getElementById('wtime').value),
+            rtimeTotal: minSecToMs(document.getElementById('rtimeTotal').value),
+            spin: minSecToMs(document.getElementById('spin').value),
+            drain: minSecToMs(document.getElementById('drain').value),
+            fill: minSecToMs(document.getElementById('fill').value),
+            fillEst: minSecToMs(document.getElementById('fillEst').value)
+        });
         hasLocalChanges = false;
-    await refreshConfig();
+        await refreshConfig();
         showToast('Parametros guardados');
     } catch (e) { alert('No se pudieron guardar parametros: ' + mapApiError(e)); }
 }

@@ -35,6 +35,8 @@ enum class ErrorCode : uint8_t {
 // ─────────────────────────────────────────────────────────────────────────
 class WashingMachine {
 public:
+    // Getter público para el contador de enjuagues
+    uint8_t rinseCount() const { return _rinseCount; }
     WashingMachine();
 
     void begin();

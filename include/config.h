@@ -36,31 +36,29 @@ enum class WaterFillMode : uint8_t {
 
 // ── Parámetros de un ciclo (configurables en tiempo de ejecución) ─────────
 struct WashParams {
-    uint32_t agitTime_ms;       // Tiempo de giro por cada sentido durante lavado (ms)
-    uint32_t agitPause_ms;      // Pausa entre cambio de sentido A <-> B (ms)
     uint32_t washTotal_ms;      // Tiempo total de la fase de lavado (ms)
-    uint32_t rinseAgitTime_ms;  // Tiempo de giro por cada sentido durante enjuague (ms)
     uint32_t rinseTotal_ms;     // Tiempo total de la fase de enjuague (ms)
     uint32_t spinTime_ms;       // Duracion total de centrifugado (ms)
     uint32_t drainTime_ms;      // Duracion de desagüe (ms)
     uint32_t fillTimeout_ms;    // Tiempo maximo para llenado antes de error (ms)
+    uint32_t fillEstimate_ms;   // Tiempo estimado de llenado (ms)
 };
 
 // ── Valores por defecto ───────────────────────────────────────────────────
+
 // Columnas:
-// 1) agitTime_ms      -> giro por sentido en lavado
-// 2) agitPause_ms     -> pausa entre inversiones
-// 3) washTotal_ms     -> tiempo total de lavado
-// 4) rinseAgitTime_ms -> giro por sentido en enjuague
-// 5) rinseTotal_ms    -> tiempo total de enjuague
-// 6) spinTime_ms      -> tiempo total de centrifugado
-// 7) drainTime_ms     -> tiempo de desagüe
-// 8) fillTimeout_ms   -> timeout de llenado
+// 1) washTotal_ms     -> tiempo total de lavado
+// 2) rinseTotal_ms    -> tiempo total de enjuague
+// 3) spinTime_ms      -> tiempo total de centrifugado
+// 4) drainTime_ms     -> tiempo de desagüe
+// 5) fillTimeout_ms   -> timeout de llenado
+// 6) fillEstimate_ms  -> tiempo estimado de llenado
+
 static const WashParams DEFAULT_PARAMS[4] = {
-    /* SOFT    */ {  3000,  1000,  60000,  3000,  60000, 60000, 30000, 180000 },
-    /* NORMAL  */ {  5000,  1000,  86400,  3000,  34000, 360000, 180000, 180000 },
-    /* STRONG  */ {  8000,  1000, 166000,  4000,  51600, 420000, 180000, 180000 },
-    /* XSTRONG */ { 12000,  1000, 295200,  5000,  84800, 480000, 180000, 180000 },
+    /* SOFT    */   { 300000, 180000, 180000, 30000, 1200000, 900000 },
+    /* NORMAL  */   { 480000, 180000, 300000, 30000, 1200000, 900000 },
+    /* STRONG  */   { 600000, 180000, 300000, 30000, 1500000, 1200000 },
+    /* XSTRONG */   { 720000, 180000, 300000, 30000, 1500000, 1200000 },
 };
 
 // ── Etiquetas ─────────────────────────────────────────────────────────────
