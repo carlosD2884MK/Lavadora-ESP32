@@ -354,7 +354,12 @@ void WashingMachine::enterPhase(CyclePhase p) {
     _refillPauseStart = 0;
     _levelReachedAt = 0;
     _levelLostAt = 0;
-    _spinningDrainStage = false;
+    // Si entramos a centrifugado, primero drenar solo
+    if (p == CyclePhase::SPINNING) {
+        _spinningDrainStage = true;
+    } else {
+        _spinningDrainStage = false;
+    }
 
     // Apagar LED_ERROR en cualquier transición de fase (excepto si parpadea en update)
     if (!(p == CyclePhase::FILLING_RINSE && _rinseCount == 1)) {
@@ -627,24 +632,23 @@ void WashingMachine::updateDraining() {
 void WashingMachine::updateSpinning() {
     const WashParams& p = params[static_cast<uint8_t>(_mode)];
     if (_spinningDrainStage) {
+        // Solo drenar, motor apagado
+        setDrain(true);
+        setSpin(false);
+        digitalWrite(Pinout::RELAY_MOTOR_ON, RELAY_OFF);
+        digitalWrite(Pinout::RELAY_DIR_A, RELAY_OFF);
+        digitalWrite(Pinout::RELAY_DIR_B, RELAY_OFF);
         if (millis() - _phaseStart >= p.drainTime_ms) {
             _spinningDrainStage = false;
             _phaseStart = millis();
-            // Mantener todos los relés activos durante centrifugado
-            setDrain(true);
-            digitalWrite(Pinout::RELAY_MOTOR_ON, RELAY_ON);
-            digitalWrite(Pinout::RELAY_DIR_A, RELAY_ON);
-            digitalWrite(Pinout::RELAY_DIR_B, RELAY_ON);
         }
         return;
     }
-
-    // Mantener todos los relés activos durante centrifugado
+    // Centrifugado: motor y drenado activos
     setDrain(true);
     digitalWrite(Pinout::RELAY_MOTOR_ON, RELAY_ON);
     digitalWrite(Pinout::RELAY_DIR_A, RELAY_ON);
     digitalWrite(Pinout::RELAY_DIR_B, RELAY_ON);
-
     if (millis() - _phaseStart >= p.spinTime_ms) {
         setSpin(false);
         setDrain(false);
